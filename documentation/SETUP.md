@@ -7,10 +7,10 @@
    ```bash
    # Recommended: Install via Homebrew
    brew install whisperkit-cli
-   
+
    # Or install via pip
    pip install whisperkit
-   
+
    # Verify it's in your PATH
    which whisperkit-cli
    ```
@@ -63,7 +63,7 @@
   ```bash
   # Recommended: Install via Homebrew
   brew install whisperkit-cli
-  
+
   # Or install via pip
   pip install whisperkit
   ```

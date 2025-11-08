@@ -128,7 +128,7 @@ If you see an error that WhisperKit CLI is not found:
    ```bash
    # Recommended: Install via Homebrew
    brew install whisperkit-cli
-   
+
    # Or install via pip
    pip install whisperkit
    ```
