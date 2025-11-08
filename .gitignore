@@ -82,6 +82,7 @@ iOSInjectionProject/
 
 # Project-specific
 legacy-assets/
+.specstory/
 
 # macOS
 .DS_Store
