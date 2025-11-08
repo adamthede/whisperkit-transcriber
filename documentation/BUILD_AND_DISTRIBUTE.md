@@ -129,9 +129,11 @@ The built `.app` file should be relatively small (typically 5-15 MB) since it do
 
 Remember: The app requires `whisperkit-cli` to be installed separately:
 ```bash
-pip install whisperkit
-# or
+# Recommended: Install via Homebrew
 brew install whisperkit-cli
+
+# Or install via pip
+pip install whisperkit
 ```
 
 The app will automatically find it in your PATH.

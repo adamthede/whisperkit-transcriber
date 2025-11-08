@@ -5,8 +5,14 @@
 1. **Xcode 14.0+** installed
 2. **WhisperKit CLI** installed:
    ```bash
+   # Recommended: Install via Homebrew
+   brew install whisperkit-cli
+   
+   # Or install via pip
    pip install whisperkit
-   which whisperkit-cli  # Verify it's in your PATH
+   
+   # Verify it's in your PATH
+   which whisperkit-cli
    ```
 
 ## Building the App
@@ -53,7 +59,14 @@
 ## Troubleshooting
 
 ### "WhisperKit CLI not found"
-- Ensure `whisperkit-cli` is installed: `pip install whisperkit`
+- Ensure `whisperkit-cli` is installed:
+  ```bash
+  # Recommended: Install via Homebrew
+  brew install whisperkit-cli
+  
+  # Or install via pip
+  pip install whisperkit
+  ```
 - Check it's in PATH: `which whisperkit-cli`
 - Add to PATH if needed: `export PATH=$PATH:/path/to/whisperkit`
 

@@ -15,7 +15,8 @@ A native macOS application for batch transcribing audio files using WhisperKit.
 
 - **macOS 13.0** or later
 - **WhisperKit CLI** installed and available in your PATH
-  - Install via: `pip install whisperkit`
+  - Install via Homebrew (recommended): `brew install whisperkit-cli`
+  - Or via pip: `pip install whisperkit`
   - Or follow WhisperKit installation instructions
 - **Xcode 14.0+** (for building from source)
 
@@ -125,6 +126,10 @@ If you see an error that WhisperKit CLI is not found:
 
 2. If not found, install WhisperKit:
    ```bash
+   # Recommended: Install via Homebrew
+   brew install whisperkit-cli
+   
+   # Or install via pip
    pip install whisperkit
    ```
 
@@ -166,16 +171,6 @@ open WhisperKitTranscriber.xcodeproj
 # Or build from command line
 xcodebuild -project WhisperKitTranscriber.xcodeproj -scheme WhisperKitTranscriber -configuration Release
 ```
-
-## Differences from Script Version
-
-The app provides the same functionality as your shell scripts but with:
-
-- **Native macOS UI**: No need to use Terminal
-- **Visual Progress**: See progress in real-time
-- **Easier File Selection**: Drag-and-drop or browse
-- **Single Output File**: Automatically combines all transcriptions
-- **Better Error Handling**: User-friendly error messages
 
 ## Future Enhancements
 
