@@ -83,6 +83,7 @@ iOSInjectionProject/
 # Project-specific
 legacy-assets/
 .specstory/
+plans-to-do/
 
 # macOS
 .DS_Store
