@@ -138,6 +138,24 @@ enum Language: String, CaseIterable, Identifiable {
     }
 }
 
+struct TranscriptionSegment: Identifiable, Codable {
+    let id: UUID
+    let startTime: Double
+    let endTime: Double
+    let text: String
+    var speaker: String?  // Speaker ID (e.g., "SPEAKER_00")
+    var speakerName: String?  // User-assigned name (e.g., "John")
+
+    init(id: UUID = UUID(), startTime: Double, endTime: Double, text: String, speaker: String? = nil, speakerName: String? = nil) {
+        self.id = id
+        self.startTime = startTime
+        self.endTime = endTime
+        self.text = text
+        self.speaker = speaker
+        self.speakerName = speakerName
+    }
+}
+
 class TranscriptionResult: Identifiable, Hashable {
     let id: UUID
     let sourcePath: String
@@ -147,8 +165,10 @@ class TranscriptionResult: Identifiable, Hashable {
     let createdAt: Date
     let modelUsed: String?
     var editedText: String
+    var segments: [TranscriptionSegment] = []
+    var speakerLabels: [String: String] = [:]  // Map speaker ID to name
 
-    init(id: UUID = UUID(), sourcePath: String, fileName: String, text: String, duration: Int?, createdAt: Date, modelUsed: String? = nil) {
+    init(id: UUID = UUID(), sourcePath: String, fileName: String, text: String, duration: Int?, createdAt: Date, modelUsed: String? = nil, segments: [TranscriptionSegment] = [], speakerLabels: [String: String] = [:]) {
         self.id = id
         self.sourcePath = sourcePath
         self.fileName = fileName
@@ -157,6 +177,16 @@ class TranscriptionResult: Identifiable, Hashable {
         self.createdAt = createdAt
         self.modelUsed = modelUsed
         self.editedText = text
+        self.segments = segments
+        self.speakerLabels = speakerLabels
+    }
+
+    var hasSpeakers: Bool {
+        !segments.isEmpty && segments.contains { $0.speaker != nil }
+    }
+
+    var uniqueSpeakers: [String] {
+        Array(Set(segments.compactMap { $0.speaker })).sorted()
     }
 
     var displayText: String {

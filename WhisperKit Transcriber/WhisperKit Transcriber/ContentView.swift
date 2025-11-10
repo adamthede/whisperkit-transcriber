@@ -205,6 +205,32 @@ struct ContentView: View {
 
                 Divider()
 
+                // Diarization Settings
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Enable Speaker Diarization", isOn: $transcriptionManager.enableDiarization)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .help("Identify and label different speakers in the audio")
+
+                    if transcriptionManager.enableDiarization {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Diarization Server URL")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            TextField("http://localhost:50061/diarize", text: $transcriptionManager.diarizationServerURL)
+                                .textFieldStyle(.roundedBorder)
+
+                            Text("Requires a diarization server running. The server should accept audio files and return speaker segments.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.leading, 20)
+                    }
+                }
+
+                Divider()
+
                 // WhisperKit Info
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -362,19 +388,71 @@ struct ContentView: View {
                     .foregroundColor(.secondary)
             }
 
-            TextEditor(text: Binding(
-                get: { transcription.displayText },
-                set: { newValue in
-                    transcriptionManager.updateTranscription(transcription, editedText: newValue)
+            // Speaker Assignment UI (if diarization is available)
+            if transcription.hasSpeakers {
+                SpeakerAssignmentView(transcription: transcription)
+            }
+
+            // Transcription text with speaker labels
+            if transcription.hasSpeakers {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(transcription.segments) { segment in
+                            HStack(alignment: .top, spacing: 8) {
+                                // Speaker indicator
+                                if let speaker = segment.speaker {
+                                    Circle()
+                                        .fill(colorForSpeaker(speaker))
+                                        .frame(width: 12, height: 12)
+                                        .padding(.top, 4)
+
+                                    Text(speakerLabel(for: speaker, in: transcription))
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(.secondary)
+                                        .frame(width: 100, alignment: .leading)
+                                }
+
+                                Text(segment.text)
+                                    .font(.body)
+                                    .textSelection(.enabled)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .padding()
                 }
-            ))
-            .font(.system(.body, design: .monospaced))
-            .frame(height: 200)
-            .border(Color.secondary.opacity(0.2))
+                .frame(height: 300)
+                .background(Color.secondary.opacity(0.05))
+                .cornerRadius(8)
+            } else {
+                TextEditor(text: Binding(
+                    get: { transcription.displayText },
+                    set: { newValue in
+                        transcriptionManager.updateTranscription(transcription, editedText: newValue)
+                    }
+                ))
+                .font(.system(.body, design: .monospaced))
+                .frame(height: 200)
+                .border(Color.secondary.opacity(0.2))
+            }
         }
         .padding()
         .background(Color.secondary.opacity(0.05))
         .cornerRadius(8)
+    }
+
+    private func speakerLabel(for speakerID: String, in transcription: TranscriptionResult) -> String {
+        if let name = transcription.speakerLabels[speakerID], !name.isEmpty {
+            return name
+        }
+        return speakerID
+    }
+
+    private func colorForSpeaker(_ speakerID: String) -> Color {
+        let colors: [Color] = [.blue, .green, .orange, .purple, .red, .pink, .cyan, .mint, .indigo, .teal]
+        let index = abs(speakerID.hashValue) % colors.count
+        return colors[index]
     }
 
     private var exportOptionsView: some View {

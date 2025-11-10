@@ -23,6 +23,8 @@ class TranscriptionManager: ObservableObject {
     @Published var errorMessage = ""
     @Published var showSuccess = false
     @Published var showResults = false
+    @Published var enableDiarization = false
+    @Published var diarizationServerURL = "http://localhost:50061/diarize"
 
     private let supportedAudioExtensions = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "wma"]
 
@@ -488,14 +490,81 @@ class TranscriptionManager: ObservableObject {
 
         let modelUsed = modelPath ?? (selectedModel == .auto ? "auto" : selectedModel.rawValue)
 
+        // Parse transcription into segments (basic implementation: split by sentences)
+        var segments = parseTranscriptionIntoSegments(transcriptionText)
+
+        // Perform diarization if enabled
+        if enableDiarization {
+            await MainActor.run {
+                statusMessage = "Performing speaker diarization for \(audioFile.lastPathComponent)..."
+            }
+
+            do {
+                // Update diarization server URL before running
+                DiarizationManager.shared.updateServerURL(diarizationServerURL)
+
+                let diarization = try await DiarizationManager.shared.diarize(audioFile: audioFile)
+
+                // Merge diarization with transcription segments
+                segments = DiarizationManager.shared.mergeDiarizationWithTranscription(
+                    diarization: diarization,
+                    transcriptionSegments: segments
+                )
+
+                print("✅ Diarization completed for \(audioFile.lastPathComponent)")
+                print("   Found \(Set(segments.compactMap { $0.speaker }).count) unique speakers")
+            } catch {
+                // Log error but don't fail transcription
+                print("⚠️ Diarization failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    statusMessage = "Warning: Diarization failed, continuing with transcription only..."
+                }
+                // Continue with segments without speaker info
+            }
+        }
+
         return TranscriptionResult(
             sourcePath: audioFile.path,
             fileName: audioFile.lastPathComponent,
             text: transcriptionText,
             duration: duration,
             createdAt: Date(),
-            modelUsed: modelUsed
+            modelUsed: modelUsed,
+            segments: segments
         )
+    }
+
+    private func parseTranscriptionIntoSegments(_ text: String) -> [TranscriptionSegment] {
+        // Simple segment parsing: split by sentences and estimate timestamps
+        // This is a basic implementation - ideally we'd get this from WhisperKit CLI
+        var segments: [TranscriptionSegment] = []
+
+        // Split text into sentences (basic split on . ! ?)
+        let sentences = text.components(separatedBy: CharacterSet(charactersIn: ".!?"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        // Estimate timing (rough approximation: ~150 words per minute)
+        let wordsPerSecond = 150.0 / 60.0
+        var currentTime = 0.0
+
+        for sentence in sentences {
+            let words = sentence.split(separator: " ").count
+            let estimatedDuration = Double(words) / wordsPerSecond
+
+            let segment = TranscriptionSegment(
+                startTime: currentTime,
+                endTime: currentTime + estimatedDuration,
+                text: sentence,
+                speaker: nil,
+                speakerName: nil
+            )
+
+            segments.append(segment)
+            currentTime += estimatedDuration
+        }
+
+        return segments
     }
 
     private func findWhisperKitCLI() -> String? {
@@ -668,7 +737,19 @@ class TranscriptionManager: ObservableObject {
                 markdown += "*Duration: \(TranscriptionManager.formatDuration(duration))*\n\n"
             }
 
-            markdown += "\(transcription.displayText)\n\n"
+            // Export with speaker labels if available
+            if transcription.hasSpeakers {
+                for segment in transcription.segments {
+                    if let speaker = segment.speaker {
+                        let speakerName = transcription.speakerLabels[speaker] ?? speaker
+                        markdown += "**\(speakerName)**: "
+                    }
+                    markdown += "\(segment.text)\n\n"
+                }
+            } else {
+                markdown += "\(transcription.displayText)\n\n"
+            }
+
             markdown += "---\n\n"
         }
 
@@ -686,7 +767,20 @@ class TranscriptionManager: ObservableObject {
             if let duration = transcription.duration {
                 text += "Duration: \(TranscriptionManager.formatDuration(duration))\n\n"
             }
-            text += "\(transcription.displayText)\n\n"
+
+            // Export with speaker labels if available
+            if transcription.hasSpeakers {
+                for segment in transcription.segments {
+                    if let speaker = segment.speaker {
+                        let speakerName = transcription.speakerLabels[speaker] ?? speaker
+                        text += "[\(speakerName)]: "
+                    }
+                    text += "\(segment.text)\n\n"
+                }
+            } else {
+                text += "\(transcription.displayText)\n\n"
+            }
+
             text += "\(String(repeating: "-", count: 50))\n\n"
         }
 
@@ -704,7 +798,7 @@ class TranscriptionManager: ObservableObject {
                 "format": "json"
             ],
             "transcriptions": transcriptions.map { transcription in
-                [
+                var transcriptionDict: [String: Any] = [
                     "source_path": transcription.sourcePath,
                     "file_name": transcription.fileName,
                     "text": transcription.displayText,
@@ -712,6 +806,25 @@ class TranscriptionManager: ObservableObject {
                     "created_at": formatter.string(from: transcription.createdAt),
                     "model_used": transcription.modelUsed as Any
                 ]
+
+                // Add speaker information if available
+                if transcription.hasSpeakers {
+                    transcriptionDict["has_speakers"] = true
+                    transcriptionDict["speaker_labels"] = transcription.speakerLabels
+                    transcriptionDict["segments"] = transcription.segments.map { segment in
+                        [
+                            "start_time": segment.startTime,
+                            "end_time": segment.endTime,
+                            "text": segment.text,
+                            "speaker": segment.speaker as Any,
+                            "speaker_name": segment.speakerName as Any
+                        ]
+                    }
+                } else {
+                    transcriptionDict["has_speakers"] = false
+                }
+
+                return transcriptionDict
             }
         ]
 
@@ -746,9 +859,25 @@ class TranscriptionManager: ObservableObject {
             if let model = transcription.modelUsed {
                 markdown += "model_used: \"\(model)\"\n"
             }
+            if transcription.hasSpeakers {
+                markdown += "has_speakers: true\n"
+                markdown += "speakers: \(transcription.uniqueSpeakers.joined(separator: ", "))\n"
+            }
             markdown += "---\n\n"
             markdown += "# \(baseFileName)\n\n"
-            markdown += "\(transcription.displayText)\n"
+
+            // Export with speaker labels if available
+            if transcription.hasSpeakers {
+                for segment in transcription.segments {
+                    if let speaker = segment.speaker {
+                        let speakerName = transcription.speakerLabels[speaker] ?? speaker
+                        markdown += "**\(speakerName)**: "
+                    }
+                    markdown += "\(segment.text)\n\n"
+                }
+            } else {
+                markdown += "\(transcription.displayText)\n"
+            }
 
             try markdown.write(toFile: fileURL.path, atomically: true, encoding: .utf8)
         }

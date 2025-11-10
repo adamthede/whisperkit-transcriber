@@ -7,9 +7,11 @@ A native macOS application for batch transcribing audio files using WhisperKit.
 - **Drag & Drop Interface**: Simply drag audio files or folders onto the app window
 - **Directory Selection**: Click to browse and select a directory containing audio files
 - **Batch Processing**: Transcribe multiple audio files in one go
+- **Speaker Diarization**: Identify and label different speakers in audio (NEW!)
 - **Combined Output**: Automatically combines all transcriptions into a single markdown file
+- **Multiple Export Formats**: Export to Markdown, Plain Text, JSON, or individual files
 - **Progress Tracking**: Real-time progress indicator showing current file being processed
-- **Configurable**: Set custom model path and language settings
+- **Configurable**: Set custom model path, language settings, and diarization options
 
 ## Requirements
 
@@ -43,12 +45,31 @@ See [BUILD_AND_DISTRIBUTE.md](BUILD_AND_DISTRIBUTE.md) for detailed instructions
    - Drag and drop audio files or folders onto the drop zone, OR
    - Click "Select Directory" to browse for a folder
 3. **Configure settings** (optional):
-   - Model Path: Leave empty for auto-selection, or specify a path
+   - Model: Choose a WhisperKit model or use auto-selection
    - Language: Default is "en" (English)
-4. **Choose output location**: Click "Choose..." to select where to save the combined markdown file
-5. **Start transcription**: Click "Start Transcription"
-6. **Wait for completion**: The app will process each file and show progress
-7. **Access results**: Your combined transcription will be saved as a markdown file
+   - **Speaker Diarization**: Enable to identify different speakers (requires diarization server)
+4. **Start transcription**: Click "Start Transcription"
+5. **Wait for completion**: The app will process each file and show progress
+6. **Assign speaker names** (if diarization is enabled):
+   - Select a transcription from the results
+   - Click "Set Name" or "Edit" for each speaker
+   - Enter meaningful names (e.g., "John Smith", "Interviewer")
+7. **Export results**: Choose your preferred format and export location
+   - Markdown (combined or individual files)
+   - Plain Text
+   - JSON with full segment data
+   - Individual files (one per audio file)
+
+### Speaker Diarization
+
+To use speaker diarization:
+
+1. Set up a diarization server (see [SPEAKER_DIARIZATION.md](SPEAKER_DIARIZATION.md))
+2. Enable "Speaker Diarization" in Configuration
+3. Configure the server URL (default: http://localhost:50061/diarize)
+4. Transcribe as usual - speaker labels will be added automatically
+
+For detailed instructions, troubleshooting, and server setup, see the [Speaker Diarization Documentation](SPEAKER_DIARIZATION.md).
 
 ## Supported Audio Formats
 
@@ -176,12 +197,16 @@ xcodebuild -project WhisperKitTranscriber.xcodeproj -scheme WhisperKitTranscribe
 
 Potential improvements:
 
-- [ ] Support for diarization (speaker identification)
-- [ ] Export to multiple formats (JSON, SRT, TXT)
+- [x] Support for diarization (speaker identification) - **IMPLEMENTED**
+- [x] Export to multiple formats (JSON, TXT, Markdown) - **IMPLEMENTED**
+- [ ] Export to subtitle formats (SRT, VTT)
 - [ ] Resume interrupted transcriptions
 - [ ] Custom output templates
 - [ ] Batch processing with parallel execution
 - [ ] Audio preview before transcription
+- [ ] Visual speaker timeline
+- [ ] Speaker statistics (speaking time, word count)
+- [ ] Filter/search by speaker
 
 ## License
 
