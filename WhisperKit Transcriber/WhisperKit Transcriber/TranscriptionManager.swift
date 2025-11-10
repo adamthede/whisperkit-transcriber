@@ -23,6 +23,8 @@ class TranscriptionManager: ObservableObject {
     @Published var errorMessage = ""
     @Published var showSuccess = false
     @Published var showResults = false
+    @Published var watchFolderManager = WatchFolderManager()
+    @Published var autoTranscribeNewFiles = false
 
     private let supportedAudioExtensions = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "wma"]
 
@@ -779,6 +781,91 @@ class TranscriptionManager: ObservableObject {
     func showError(message: String) {
         errorMessage = message
         showError = true
+    }
+
+    func setupWatchFolder() {
+        guard let folderPath = watchFolderManager.watchedFolderPath else {
+            return
+        }
+
+        do {
+            try watchFolderManager.startWatching(folderPath: folderPath) { [weak self] fileURL in
+                guard let self = self else { return }
+
+                // Only auto-transcribe if enabled
+                guard self.autoTranscribeNewFiles else {
+                    // Just add to pending files list
+                    Task { @MainActor in
+                        if !self.audioFiles.contains(fileURL) {
+                            self.audioFiles.append(fileURL)
+                        }
+                    }
+                    return
+                }
+
+                // Auto-transcribe the file
+                Task {
+                    await self.transcribeSingleFile(fileURL)
+                }
+            }
+        } catch {
+            Task { @MainActor in
+                showError(message: "Failed to start watching folder: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func transcribeSingleFile(_ fileURL: URL) async {
+        // Add file to current batch
+        await MainActor.run {
+            if !audioFiles.contains(fileURL) {
+                audioFiles.append(fileURL)
+            }
+
+            // Add to file statuses if not already there
+            if !fileStatuses.contains(where: { $0.url == fileURL }) {
+                fileStatuses.append(FileStatus(id: UUID(), url: fileURL, status: .pending))
+            }
+        }
+
+        // Get model path
+        let modelPath = getModelPath()
+
+        do {
+            // Update status to processing
+            await MainActor.run {
+                if let index = fileStatuses.firstIndex(where: { $0.url == fileURL }) {
+                    fileStatuses[index].status = .processing
+                }
+            }
+
+            // Transcribe (handles both audio and video files)
+            let result = try await transcribeFile(fileURL, modelPath: modelPath)
+
+            // Update status and add result
+            await MainActor.run {
+                if let index = fileStatuses.firstIndex(where: { $0.url == fileURL }) {
+                    fileStatuses[index].status = .completed
+                    fileStatuses[index].transcription = result
+                }
+
+                if !completedTranscriptions.contains(where: { $0.id == result.id }) {
+                    completedTranscriptions.append(result)
+                }
+            }
+
+            // Mark as processed in watch folder manager
+            watchFolderManager.markFileProcessed(fileURL.path)
+        } catch {
+            await MainActor.run {
+                if let index = fileStatuses.firstIndex(where: { $0.url == fileURL }) {
+                    fileStatuses[index].status = .failed(error.localizedDescription)
+                }
+            }
+
+            // Mark as failed so it can be retried
+            watchFolderManager.markFileFailed(fileURL.path)
+        }
     }
 }
 

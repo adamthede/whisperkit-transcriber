@@ -21,6 +21,8 @@ struct ContentView: View {
     @State private var includeTimestampInFilename = true
     @State private var alsoExportIndividualFiles = false
     @StateObject private var audioPlayer = AudioPlayerManager()
+    @State private var showWatchFolderPicker = false
+    @State private var showWatchFolderSettings = false
 
     var body: some View {
         ScrollView {
@@ -43,6 +45,10 @@ struct ContentView: View {
 
                 // Configuration Section (Expandable)
                 configurationSection
+                    .padding(.horizontal)
+
+                // Watch Folder Section
+                watchFolderSection
                     .padding(.horizontal)
 
                 // Start Button
@@ -73,6 +79,12 @@ struct ContentView: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text("Transcription exported successfully!")
+        }
+        .onAppear {
+            // Restore watch folder if it was set
+            if transcriptionManager.watchFolderManager.watchedFolderPath != nil {
+                transcriptionManager.setupWatchFolder()
+            }
         }
     }
 
@@ -149,6 +161,153 @@ struct ContentView: View {
             Text("\(transcriptionManager.audioFiles.count) files selected")
                 .font(.subheadline)
                 .fontWeight(.medium)
+        }
+    }
+
+    // MARK: - Watch Folder Section
+
+    private var watchFolderSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Watch Folder")
+                    .font(.headline)
+                Spacer()
+                if transcriptionManager.watchFolderManager.isWatching {
+                    Button(action: {
+                        transcriptionManager.watchFolderManager.stopWatching()
+                    }) {
+                        Text("Stop Watching")
+                            .foregroundColor(.red)
+                    }
+                } else {
+                    Button(action: {
+                        showWatchFolderPicker = true
+                    }) {
+                        Text("Choose Folder")
+                    }
+                }
+            }
+
+            if let folderPath = transcriptionManager.watchFolderManager.watchedFolderPath {
+                HStack {
+                    Image(systemName: "folder.fill")
+                        .foregroundColor(.blue)
+                    Text(folderPath)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                }
+
+                Toggle("Auto-transcribe new files", isOn: $transcriptionManager.autoTranscribeNewFiles)
+                    .help("Automatically transcribe files when they are added to the watch folder")
+
+                // Advanced settings for surveillance video use case
+                DisclosureGroup("Advanced Settings") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle("Process existing files on start", isOn: $transcriptionManager.watchFolderManager.processExistingFilesOnStart)
+                            .help("If enabled, will transcribe files already in folder when watching starts")
+
+                        HStack {
+                            Text("File write delay (seconds):")
+                            TextField("", value: $transcriptionManager.watchFolderManager.fileWriteDelay, format: .number)
+                                .frame(width: 60)
+                        }
+                        .help("Wait time before processing new file (longer for large video files)")
+
+                        HStack {
+                            Text("Max concurrent processes:")
+                            TextField("", value: $transcriptionManager.watchFolderManager.maxConcurrentProcesses, format: .number)
+                                .frame(width: 60)
+                        }
+                        .help("Limit simultaneous transcriptions (important for large video files)")
+
+                        HStack {
+                            Text("Min file size (MB):")
+                            TextField("", value: Binding(
+                                get: { Double(transcriptionManager.watchFolderManager.minFileSizeBytes) / 1_000_000 },
+                                set: { transcriptionManager.watchFolderManager.minFileSizeBytes = Int64($0 * 1_000_000) }
+                            ), format: .number)
+                            .frame(width: 60)
+                        }
+                        .help("Skip files smaller than this (may be incomplete)")
+
+                        HStack {
+                            Text("Max file age (seconds):")
+                            TextField("", value: Binding(
+                                get: { transcriptionManager.watchFolderManager.maxFileAgeSeconds ?? 0 },
+                                set: { transcriptionManager.watchFolderManager.maxFileAgeSeconds = $0 > 0 ? $0 : nil }
+                            ), format: .number)
+                            .frame(width: 100)
+                        }
+                        .help("Only process files newer than this (0 = no limit)")
+                    }
+                    .font(.caption)
+                }
+
+                if transcriptionManager.watchFolderManager.isWatching {
+                    HStack {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 8, height: 8)
+                        Text("Watching for new files...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                HStack {
+                    Text("Processed: \(transcriptionManager.watchFolderManager.processedFiles.count) files")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Clear History") {
+                        transcriptionManager.watchFolderManager.clearProcessedFiles()
+                    }
+                    .font(.caption)
+                }
+            } else {
+                Text("No folder selected. Click 'Choose Folder' to start watching.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding()
+        .background(Color.secondary.opacity(0.1))
+        .cornerRadius(8)
+        .fileImporter(
+            isPresented: $showWatchFolderPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    let path = url.path
+                    do {
+                        try transcriptionManager.watchFolderManager.startWatching(
+                            folderPath: path,
+                            transcriptionCallback: { fileURL in
+                                if transcriptionManager.autoTranscribeNewFiles {
+                                    Task {
+                                        await transcriptionManager.transcribeSingleFile(fileURL)
+                                    }
+                                } else {
+                                    Task { @MainActor in
+                                        if !transcriptionManager.audioFiles.contains(fileURL) {
+                                            transcriptionManager.audioFiles.append(fileURL)
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    } catch {
+                        transcriptionManager.showError(message: error.localizedDescription)
+                    }
+                }
+            case .failure(let error):
+                transcriptionManager.showError(message: error.localizedDescription)
+            }
         }
     }
 
