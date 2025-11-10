@@ -12,6 +12,7 @@ import AVFoundation
 
 struct ContentView: View {
     @StateObject private var transcriptionManager = TranscriptionManager()
+    @EnvironmentObject var menubarManager: MenubarManager
     @State private var isDropTargeted = false
     @State private var selectedTranscription: TranscriptionResult?
     @State private var showFileList = false
@@ -226,6 +227,32 @@ struct ContentView: View {
                         .cornerRadius(4)
 
                     Text("Once installed, the app will automatically find and use it.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Divider()
+
+                // Menubar Mode
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "menubar.rectangle")
+                            .foregroundColor(.blue)
+                        Text("Menubar Mode")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                    }
+
+                    Toggle("Show in menubar only", isOn: Binding(
+                        get: { menubarManager.isMenubarMode },
+                        set: { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "menubarMode")
+                            NotificationCenter.default.post(name: .toggleMenubarMode, object: newValue)
+                        }
+                    ))
+                    .help("Hide dock icon and show only in menubar")
+
+                    Text("When enabled, the app will only appear in the menubar and won't show in the dock. Access quick transcription from the menubar icon.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -700,4 +727,5 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
+        .environmentObject(MenubarManager())
 }

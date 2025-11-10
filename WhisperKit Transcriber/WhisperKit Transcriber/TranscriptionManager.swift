@@ -182,7 +182,7 @@ class TranscriptionManager: ObservableObject {
         print("📊 [\(fileName)] \(line)")
     }
 
-    private func transcribeFile(_ audioFile: URL, modelPath: String?) async throws -> TranscriptionResult {
+    func transcribeFile(_ audioFile: URL, modelPath: String?) async throws -> TranscriptionResult {
         // Check if whisperkit-cli is available
         guard let whisperkitPath = findWhisperKitCLI() else {
             let errorMsg = """
