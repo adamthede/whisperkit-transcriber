@@ -148,7 +148,23 @@ class TranscriptionResult: Identifiable, Hashable {
     let modelUsed: String?
     var editedText: String
 
-    init(id: UUID = UUID(), sourcePath: String, fileName: String, text: String, duration: Int?, createdAt: Date, modelUsed: String? = nil) {
+    // Performance metrics
+    var transcriptionDuration: TimeInterval?  // How long transcription took
+    var audioEncoderComputeUnit: String?  // Which compute unit was used for audio encoder
+    var textDecoderComputeUnit: String?  // Which compute unit was used for text decoder
+
+    // Calculated property: Real-time factor (audio_duration / transcription_time)
+    // Higher is better (e.g., 2.0x means transcription took half the audio duration)
+    var realTimeFactor: Double? {
+        guard let duration = duration,
+              let transDuration = transcriptionDuration,
+              transDuration > 0 else {
+            return nil
+        }
+        return Double(duration) / transDuration
+    }
+
+    init(id: UUID = UUID(), sourcePath: String, fileName: String, text: String, duration: Int?, createdAt: Date, modelUsed: String? = nil, transcriptionDuration: TimeInterval? = nil, audioEncoderComputeUnit: String? = nil, textDecoderComputeUnit: String? = nil) {
         self.id = id
         self.sourcePath = sourcePath
         self.fileName = fileName
@@ -157,6 +173,9 @@ class TranscriptionResult: Identifiable, Hashable {
         self.createdAt = createdAt
         self.modelUsed = modelUsed
         self.editedText = text
+        self.transcriptionDuration = transcriptionDuration
+        self.audioEncoderComputeUnit = audioEncoderComputeUnit
+        self.textDecoderComputeUnit = textDecoderComputeUnit
     }
 
     var displayText: String {

@@ -24,6 +24,11 @@ class TranscriptionManager: ObservableObject {
     @Published var showSuccess = false
     @Published var showResults = false
 
+    // GPU acceleration settings
+    @Published var audioEncoderComputeUnit: ComputeUnit = SystemInfo.recommendedComputeUnit
+    @Published var textDecoderComputeUnit: ComputeUnit = SystemInfo.recommendedComputeUnit
+    @Published var showPerformanceMetrics = true
+
     private let supportedAudioExtensions = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "wma"]
 
     func reset() {
@@ -183,6 +188,9 @@ class TranscriptionManager: ObservableObject {
     }
 
     private func transcribeFile(_ audioFile: URL, modelPath: String?) async throws -> TranscriptionResult {
+        // Start performance tracking
+        let startTime = Date()
+
         // Check if whisperkit-cli is available
         guard let whisperkitPath = findWhisperKitCLI() else {
             let errorMsg = """
@@ -211,6 +219,15 @@ class TranscriptionManager: ObservableObject {
             "--language", selectedLanguage.code,
             "--verbose"
         ]
+
+        // Add compute unit arguments
+        arguments.append("--audio-encoder-compute-units")
+        arguments.append(audioEncoderComputeUnit.cliArgument)
+        arguments.append("--text-decoder-compute-units")
+        arguments.append(textDecoderComputeUnit.cliArgument)
+
+        print("   Audio Encoder: \(audioEncoderComputeUnit.displayName)")
+        print("   Text Decoder: \(textDecoderComputeUnit.displayName)")
 
         // Add model selection
         if let modelPath = modelPath, !modelPath.isEmpty {
@@ -488,13 +505,27 @@ class TranscriptionManager: ObservableObject {
 
         let modelUsed = modelPath ?? (selectedModel == .auto ? "auto" : selectedModel.rawValue)
 
+        // Calculate transcription duration
+        let endTime = Date()
+        let transcriptionDuration = endTime.timeIntervalSince(startTime)
+
+        // Log performance metrics
+        if let audioDuration = duration {
+            let rtf = Double(audioDuration) / transcriptionDuration
+            print("⏱️  Performance: \(String(format: "%.2f", transcriptionDuration))s transcription time")
+            print("   Real-time factor: \(String(format: "%.2f", rtf))x")
+        }
+
         return TranscriptionResult(
             sourcePath: audioFile.path,
             fileName: audioFile.lastPathComponent,
             text: transcriptionText,
             duration: duration,
             createdAt: Date(),
-            modelUsed: modelUsed
+            modelUsed: modelUsed,
+            transcriptionDuration: transcriptionDuration,
+            audioEncoderComputeUnit: audioEncoderComputeUnit.rawValue,
+            textDecoderComputeUnit: textDecoderComputeUnit.rawValue
         )
     }
 

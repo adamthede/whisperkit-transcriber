@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var includeTimestampInFilename = true
     @State private var alsoExportIndividualFiles = false
     @StateObject private var audioPlayer = AudioPlayerManager()
+    @State private var showSystemInfo = false
 
     var body: some View {
         ScrollView {
@@ -73,6 +74,9 @@ struct ContentView: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text("Transcription exported successfully!")
+        }
+        .sheet(isPresented: $showSystemInfo) {
+            SystemInfoView()
         }
     }
 
@@ -201,6 +205,86 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.menu)
+                }
+
+                Divider()
+
+                // GPU/Compute Unit Configuration
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Image(systemName: "cpu")
+                            .foregroundColor(.purple)
+                        Text("GPU Acceleration")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        Spacer()
+                        Button(action: {
+                            showSystemInfo = true
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "info.circle")
+                                Text("System Info")
+                            }
+                            .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    // Audio Encoder Compute Unit
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Audio Encoder")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        Picker("", selection: $transcriptionManager.audioEncoderComputeUnit) {
+                            ForEach(ComputeUnit.allCases) { unit in
+                                Text(unit.displayName).tag(unit)
+                            }
+                        }
+                        .pickerStyle(.menu)
+
+                        if let warning = transcriptionManager.audioEncoderComputeUnit.compatibilityWarning {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text(warning)
+                            }
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                        } else {
+                            Text(transcriptionManager.audioEncoderComputeUnit.description)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    // Text Decoder Compute Unit
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Text Decoder")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        Picker("", selection: $transcriptionManager.textDecoderComputeUnit) {
+                            ForEach(ComputeUnit.allCases) { unit in
+                                Text(unit.displayName).tag(unit)
+                            }
+                        }
+                        .pickerStyle(.menu)
+
+                        if let warning = transcriptionManager.textDecoderComputeUnit.compatibilityWarning {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text(warning)
+                            }
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                        } else {
+                            Text(transcriptionManager.textDecoderComputeUnit.description)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
 
                 Divider()
@@ -356,11 +440,74 @@ struct ContentView: View {
             Text(transcription.fileName)
                 .font(.headline)
 
-            if let duration = transcription.duration {
-                Text("Duration: \(formatDuration(duration))")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            // Metadata and performance metrics
+            VStack(alignment: .leading, spacing: 6) {
+                if let duration = transcription.duration {
+                    HStack {
+                        Image(systemName: "clock")
+                            .foregroundColor(.secondary)
+                            .frame(width: 20)
+                        Text("Audio Duration: \(formatDuration(duration))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if let transcriptionDuration = transcription.transcriptionDuration {
+                    HStack {
+                        Image(systemName: "timer")
+                            .foregroundColor(.secondary)
+                            .frame(width: 20)
+                        Text("Transcription Time: \(String(format: "%.2f", transcriptionDuration))s")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if let realTimeFactor = transcription.realTimeFactor {
+                    HStack {
+                        Image(systemName: "speedometer")
+                            .foregroundColor(realTimeFactor >= 1.0 ? .green : .orange)
+                            .frame(width: 20)
+                        Text("Speed: \(String(format: "%.2fx", realTimeFactor)) real-time")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        if realTimeFactor >= 2.0 {
+                            Text("(Fast)")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                        } else if realTimeFactor < 1.0 {
+                            Text("(Slower than real-time)")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+                    }
+                }
+
+                if let audioEncoder = transcription.audioEncoderComputeUnit {
+                    HStack {
+                        Image(systemName: "cpu")
+                            .foregroundColor(.purple)
+                            .frame(width: 20)
+                        Text("Audio Encoder: \(formatComputeUnit(audioEncoder))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if let textDecoder = transcription.textDecoderComputeUnit {
+                    HStack {
+                        Image(systemName: "cpu")
+                            .foregroundColor(.purple)
+                            .frame(width: 20)
+                        Text("Text Decoder: \(formatComputeUnit(textDecoder))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
             }
+
+            Divider()
 
             TextEditor(text: Binding(
                 get: { transcription.displayText },
@@ -577,6 +724,21 @@ struct ContentView: View {
 
     private func formatDuration(_ seconds: Int) -> String {
         return ContentView.formatDuration(seconds)
+    }
+
+    private func formatComputeUnit(_ rawValue: String) -> String {
+        switch rawValue {
+        case "all":
+            return "All (CPU + GPU + Neural Engine)"
+        case "cpuAndGPU":
+            return "CPU + GPU"
+        case "cpuAndNeuralEngine":
+            return "CPU + Neural Engine"
+        case "cpuOnly":
+            return "CPU Only"
+        default:
+            return rawValue
+        }
     }
 
     private func selectDirectory() {
