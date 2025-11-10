@@ -8,6 +8,8 @@
 import Foundation
 import SwiftUI
 import Combine
+import AppKit
+import PDFKit
 
 class TranscriptionManager: ObservableObject {
     @Published var audioFiles: [URL] = []
@@ -619,6 +621,16 @@ class TranscriptionManager: ObservableObject {
             try exportPlainText(transcriptions: transcriptions, outputPath: finalOutputPath)
         case .json:
             try exportJSON(transcriptions: transcriptions, outputPath: finalOutputPath)
+        case .srt:
+            try exportSRT(transcriptions: transcriptions, outputPath: finalOutputPath)
+        case .vtt:
+            try exportVTT(transcriptions: transcriptions, outputPath: finalOutputPath)
+        case .html:
+            try exportHTML(transcriptions: transcriptions, outputPath: finalOutputPath)
+        case .docx:
+            try exportDOCX(transcriptions: transcriptions, outputPath: finalOutputPath)
+        case .pdf:
+            try exportPDF(transcriptions: transcriptions, outputPath: finalOutputPath)
         case .individualFiles:
             try exportIndividualFiles(transcriptions: transcriptions, outputDir: outputPath, includeTimestamp: includeTimestamp)
         }
@@ -754,6 +766,432 @@ class TranscriptionManager: ObservableObject {
         }
     }
 
+    // MARK: - SRT Export
+
+    private func exportSRT(transcriptions: [TranscriptionResult], outputPath: String) throws {
+        var srtContent = ""
+        var subtitleIndex = 1
+
+        for transcription in transcriptions {
+            let segments = transcription.segments
+
+            for segment in segments {
+                // SRT format: index, timestamps, text, blank line
+                srtContent += "\(subtitleIndex)\n"
+                srtContent += "\(formatSRTTime(segment.startTime)) --> \(formatSRTTime(segment.endTime))\n"
+                srtContent += "\(segment.text)\n\n"
+                subtitleIndex += 1
+            }
+        }
+
+        try srtContent.write(toFile: outputPath, atomically: true, encoding: .utf8)
+    }
+
+    private func formatSRTTime(_ seconds: Double) -> String {
+        let hours = Int(seconds) / 3600
+        let minutes = (Int(seconds) % 3600) / 60
+        let secs = Int(seconds) % 60
+        let milliseconds = Int((seconds.truncatingRemainder(dividingBy: 1)) * 1000)
+
+        return String(format: "%02d:%02d:%02d,%03d", hours, minutes, secs, milliseconds)
+    }
+
+    // MARK: - VTT Export
+
+    private func exportVTT(transcriptions: [TranscriptionResult], outputPath: String) throws {
+        var vttContent = "WEBVTT\n\n"
+
+        for transcription in transcriptions {
+            // Add file identifier as NOTE
+            let fileName = (transcription.fileName as NSString).deletingPathExtension
+            vttContent += "NOTE \(fileName)\n\n"
+
+            let segments = transcription.segments
+
+            for segment in segments {
+                vttContent += "\(formatVTTTime(segment.startTime)) --> \(formatVTTTime(segment.endTime))\n"
+                vttContent += "\(segment.text)\n\n"
+            }
+        }
+
+        try vttContent.write(toFile: outputPath, atomically: true, encoding: .utf8)
+    }
+
+    private func formatVTTTime(_ seconds: Double) -> String {
+        let hours = Int(seconds) / 3600
+        let minutes = (Int(seconds) % 3600) / 60
+        let secs = seconds.truncatingRemainder(dividingBy: 60)
+
+        return String(format: "%02d:%02d:%06.3f", hours, minutes, secs)
+    }
+
+    // MARK: - HTML Export
+
+    private func exportHTML(transcriptions: [TranscriptionResult], outputPath: String) throws {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        var html = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Audio Transcription</title>
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+                    max-width: 800px;
+                    margin: 40px auto;
+                    padding: 20px;
+                    line-height: 1.6;
+                    color: #333;
+                }
+                h1 {
+                    color: #333;
+                    border-bottom: 2px solid #333;
+                    padding-bottom: 10px;
+                    margin-bottom: 20px;
+                }
+                h2 {
+                    color: #666;
+                    margin-top: 30px;
+                    margin-bottom: 15px;
+                }
+                .metadata {
+                    color: #888;
+                    font-size: 0.9em;
+                    margin-bottom: 20px;
+                }
+                .transcription {
+                    line-height: 1.6;
+                    margin-bottom: 30px;
+                }
+                .separator {
+                    border-top: 1px solid #ddd;
+                    margin: 30px 0;
+                }
+                @media (prefers-color-scheme: dark) {
+                    body { background-color: #1e1e1e; color: #d4d4d4; }
+                    h1 { color: #d4d4d4; border-bottom-color: #555; }
+                    h2 { color: #b0b0b0; }
+                    .metadata { color: #808080; }
+                    .separator { border-top-color: #555; }
+                }
+            </style>
+        </head>
+        <body>
+            <h1>Combined Audio Transcription</h1>
+            <div class="metadata">
+                <p>Generated: \(formatter.string(from: Date()))</p>
+                <p>Files: \(transcriptions.count)</p>
+            </div>
+
+        """
+
+        for transcription in transcriptions {
+            let fileName = (transcription.fileName as NSString).deletingPathExtension
+            html += "<div class=\"transcription\">\n"
+            html += "<h2>\(escapeHTML(fileName))</h2>\n"
+
+            if let duration = transcription.duration {
+                html += "<div class=\"metadata\">Duration: \(TranscriptionManager.formatDuration(duration))</div>\n"
+            }
+
+            // Escape HTML entities and convert newlines to <br>
+            let escapedText = escapeHTML(transcription.displayText)
+                .replacingOccurrences(of: "\n", with: "<br>\n")
+
+            html += "<p>\(escapedText)</p>\n"
+            html += "</div>\n"
+            html += "<div class=\"separator\"></div>\n"
+        }
+
+        html += """
+        </body>
+        </html>
+        """
+
+        try html.write(toFile: outputPath, atomically: true, encoding: .utf8)
+    }
+
+    private func escapeHTML(_ text: String) -> String {
+        return text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
+
+    // MARK: - DOCX Export
+
+    private func exportDOCX(transcriptions: [TranscriptionResult], outputPath: String) throws {
+        // Try to export using Python's python-docx library
+        // If that fails, fallback to RTF format
+        do {
+            try exportDOCXViaPython(transcriptions: transcriptions, outputPath: outputPath)
+        } catch {
+            print("⚠️ Python DOCX export failed: \(error.localizedDescription)")
+            print("   Falling back to RTF format (compatible with Word)")
+
+            // Fallback to RTF format
+            let rtfPath = (outputPath as NSString).deletingPathExtension + ".rtf"
+            try exportRTF(transcriptions: transcriptions, outputPath: rtfPath)
+
+            // If original path was .docx, inform user
+            if outputPath.hasSuffix(".docx") {
+                print("   Exported as RTF instead: \(rtfPath)")
+            }
+        }
+    }
+
+    private func exportDOCXViaPython(transcriptions: [TranscriptionResult], outputPath: String) throws {
+        // Create temporary JSON file with transcription data
+        let tempJSON = NSTemporaryDirectory() + UUID().uuidString + ".json"
+        defer {
+            try? FileManager.default.removeItem(atPath: tempJSON)
+        }
+
+        try exportJSON(transcriptions: transcriptions, outputPath: tempJSON)
+
+        // Python script to convert JSON to DOCX
+        let pythonScript = """
+        import json
+        import sys
+        try:
+            from docx import Document
+            from docx.shared import Pt, Inches
+        except ImportError:
+            print("ERROR: python-docx not installed", file=sys.stderr)
+            sys.exit(1)
+
+        with open('\(tempJSON)', 'r') as f:
+            data = json.load(f)
+
+        doc = Document()
+
+        # Title
+        title = doc.add_heading('Combined Audio Transcription', 0)
+
+        # Metadata
+        metadata = data.get('metadata', {})
+        p = doc.add_paragraph()
+        p.add_run(f"Generated: {metadata.get('created_utc', 'N/A')}").font.size = Pt(9)
+        p.add_run(f"\\nFiles: {metadata.get('combined_from', 0)}").font.size = Pt(9)
+
+        # Transcriptions
+        for trans in data.get('transcriptions', []):
+            doc.add_heading(trans['file_name'], level=1)
+
+            if trans.get('duration_seconds'):
+                duration = trans['duration_seconds']
+                hours = duration // 3600
+                minutes = (duration % 3600) // 60
+                secs = duration % 60
+                if hours > 0:
+                    duration_str = f"{hours}:{minutes:02d}:{secs:02d}"
+                else:
+                    duration_str = f"{minutes}:{secs:02d}"
+                p = doc.add_paragraph(f"Duration: {duration_str}")
+                p.runs[0].font.size = Pt(9)
+
+            doc.add_paragraph(trans['text'])
+            doc.add_page_break()
+
+        doc.save('\(outputPath)')
+        """
+
+        // Execute Python script
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["python3", "-c", pythonScript]
+
+        let pipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = errorPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        if process.terminationStatus != 0 {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            throw TranscriptionError.exportFailed("DOCX export failed: \(errorMessage)")
+        }
+    }
+
+    private func exportRTF(transcriptions: [TranscriptionResult], outputPath: String) throws {
+        let attributedString = NSMutableAttributedString()
+
+        // Title
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: 24),
+            .foregroundColor: NSColor.black
+        ]
+        attributedString.append(NSAttributedString(string: "Combined Audio Transcription\n\n", attributes: titleAttributes))
+
+        // Metadata
+        let metadataAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10),
+            .foregroundColor: NSColor.darkGray
+        ]
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        attributedString.append(NSAttributedString(
+            string: "Generated: \(formatter.string(from: Date()))\nFiles: \(transcriptions.count)\n\n",
+            attributes: metadataAttributes
+        ))
+
+        // Content
+        let bodyAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12),
+            .foregroundColor: NSColor.black
+        ]
+
+        let headingAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: 16),
+            .foregroundColor: NSColor.black
+        ]
+
+        for transcription in transcriptions {
+            let fileName = (transcription.fileName as NSString).deletingPathExtension
+
+            // File name heading
+            attributedString.append(NSAttributedString(string: "\n\(fileName)\n", attributes: headingAttributes))
+
+            // Duration if available
+            if let duration = transcription.duration {
+                attributedString.append(NSAttributedString(
+                    string: "Duration: \(TranscriptionManager.formatDuration(duration))\n\n",
+                    attributes: metadataAttributes
+                ))
+            }
+
+            // Transcription text
+            attributedString.append(NSAttributedString(string: "\(transcription.displayText)\n\n", attributes: bodyAttributes))
+
+            // Separator
+            attributedString.append(NSAttributedString(string: String(repeating: "─", count: 50) + "\n\n", attributes: metadataAttributes))
+        }
+
+        // Convert to RTF
+        let rtfData = try attributedString.data(
+            from: NSRange(location: 0, length: attributedString.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        )
+
+        try rtfData.write(to: URL(fileURLWithPath: outputPath))
+    }
+
+    // MARK: - PDF Export
+
+    private func exportPDF(transcriptions: [TranscriptionResult], outputPath: String) throws {
+        let pageWidth: CGFloat = 612.0  // 8.5 inches * 72 points/inch
+        let pageHeight: CGFloat = 792.0  // 11 inches * 72 points/inch
+        let margin: CGFloat = 72.0  // 1 inch margin
+        let contentWidth = pageWidth - (2 * margin)
+
+        // Create attributed string with all content
+        let attributedString = NSMutableAttributedString()
+
+        // Title
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: 24),
+            .foregroundColor: NSColor.black
+        ]
+        attributedString.append(NSAttributedString(string: "Combined Audio Transcription\n\n", attributes: titleAttributes))
+
+        // Metadata
+        let metadataAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10),
+            .foregroundColor: NSColor.darkGray
+        ]
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        attributedString.append(NSAttributedString(
+            string: "Generated: \(formatter.string(from: Date()))\nFiles: \(transcriptions.count)\n\n",
+            attributes: metadataAttributes
+        ))
+
+        // Content
+        let bodyAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12),
+            .foregroundColor: NSColor.black
+        ]
+
+        let headingAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: 16),
+            .foregroundColor: NSColor.black
+        ]
+
+        for transcription in transcriptions {
+            let fileName = (transcription.fileName as NSString).deletingPathExtension
+
+            // File name heading
+            attributedString.append(NSAttributedString(string: "\n\(fileName)\n", attributes: headingAttributes))
+
+            // Duration if available
+            if let duration = transcription.duration {
+                attributedString.append(NSAttributedString(
+                    string: "Duration: \(TranscriptionManager.formatDuration(duration))\n\n",
+                    attributes: metadataAttributes
+                ))
+            }
+
+            // Transcription text
+            attributedString.append(NSAttributedString(string: "\(transcription.displayText)\n\n", attributes: bodyAttributes))
+
+            // Separator
+            attributedString.append(NSAttributedString(string: "─" + String(repeating: "─", count: 50) + "\n", attributes: metadataAttributes))
+        }
+
+        // Create PDF data
+        let pdfData = NSMutableData()
+        let pdfConsumer = CGDataConsumer(data: pdfData as CFMutableData)!
+
+        var mediaBox = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
+        let pdfContext = CGContext(consumer: pdfConsumer, mediaBox: &mediaBox, nil)!
+
+        // Render the attributed string into the PDF
+        let framesetter = CTFramesetterCreateWithAttributedString(attributedString)
+        var currentRange = CFRange(location: 0, length: 0)
+        var currentPage = 0
+        let textRect = CGRect(x: margin, y: margin, width: contentWidth, height: pageHeight - (2 * margin))
+
+        while currentRange.location < attributedString.length {
+            pdfContext.beginPage(mediaBox: &mediaBox)
+
+            let framePath = CGPath(rect: textRect, transform: nil)
+            let frameRange = CFRange(location: currentRange.location, length: attributedString.length - currentRange.location)
+            let frame = CTFramesetterCreateFrame(framesetter, frameRange, framePath, nil)
+
+            // Flip coordinates for PDF (origin at bottom-left)
+            pdfContext.saveGState()
+            pdfContext.translateBy(x: 0, y: pageHeight)
+            pdfContext.scaleBy(x: 1.0, y: -1.0)
+            CTFrameDraw(frame, pdfContext)
+            pdfContext.restoreGState()
+
+            let visibleRange = CTFrameGetVisibleStringRange(frame)
+            currentRange.location += visibleRange.length
+            currentRange.length = attributedString.length - currentRange.location
+
+            pdfContext.endPage()
+            currentPage += 1
+
+            if visibleRange.length == 0 {
+                break // Prevent infinite loop
+            }
+        }
+
+        pdfContext.closePDF()
+
+        // Write to file
+        try pdfData.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+    }
+
     static func formatDuration(_ seconds: Int) -> String {
         let hours = seconds / 3600
         let minutes = (seconds % 3600) / 60
@@ -787,6 +1225,7 @@ class TranscriptionManager: ObservableObject {
 enum TranscriptionError: LocalizedError {
     case whisperKitNotFound
     case transcriptionFailed(String)
+    case exportFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -794,6 +1233,8 @@ enum TranscriptionError: LocalizedError {
             return "WhisperKit CLI not found. Please ensure whisperkit-cli is installed and available in your PATH."
         case .transcriptionFailed(let details):
             return "Transcription failed: \(details)"
+        case .exportFailed(let details):
+            return "Export failed: \(details)"
         }
     }
 }

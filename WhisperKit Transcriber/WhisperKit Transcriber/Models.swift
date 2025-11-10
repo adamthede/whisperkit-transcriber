@@ -47,6 +47,11 @@ enum ExportFormat: String, CaseIterable, Identifiable {
     case markdown = "md"
     case plainText = "txt"
     case json = "json"
+    case srt = "srt"
+    case vtt = "vtt"
+    case html = "html"
+    case docx = "docx"
+    case pdf = "pdf"
     case individualFiles = "individual"
 
     var id: String { rawValue }
@@ -56,6 +61,11 @@ enum ExportFormat: String, CaseIterable, Identifiable {
         case .markdown: return "Markdown (Combined)"
         case .plainText: return "Plain Text (Combined)"
         case .json: return "JSON (Structured)"
+        case .srt: return "SRT Subtitles"
+        case .vtt: return "WebVTT Subtitles"
+        case .html: return "HTML Document"
+        case .docx: return "Microsoft Word (.docx)"
+        case .pdf: return "PDF Document"
         case .individualFiles: return "Individual Files (One per audio)"
         }
     }
@@ -65,6 +75,11 @@ enum ExportFormat: String, CaseIterable, Identifiable {
         case .markdown: return "md"
         case .plainText: return "txt"
         case .json: return "json"
+        case .srt: return "srt"
+        case .vtt: return "vtt"
+        case .html: return "html"
+        case .docx: return "docx"
+        case .pdf: return "pdf"
         case .individualFiles: return "md"
         }
     }
@@ -202,6 +217,76 @@ struct FileStatus: Identifiable {
                 return false
             }
         }
+    }
+}
+
+// MARK: - Transcription Segments for SRT/VTT Export
+
+struct TranscriptionSegment: Identifiable {
+    let id: UUID
+    let startTime: Double  // seconds
+    let endTime: Double    // seconds
+    let text: String
+    let speaker: String?   // For future diarization support
+
+    init(id: UUID = UUID(), startTime: Double, endTime: Double, text: String, speaker: String? = nil) {
+        self.id = id
+        self.startTime = startTime
+        self.endTime = endTime
+        self.text = text
+        self.speaker = speaker
+    }
+}
+
+extension TranscriptionResult {
+    var segments: [TranscriptionSegment] {
+        return estimateSegments(from: displayText, duration: duration)
+    }
+
+    private func estimateSegments(from text: String, duration: Int?) -> [TranscriptionSegment] {
+        guard let duration = duration, duration > 0 else {
+            // No duration, return single segment
+            return [TranscriptionSegment(
+                startTime: 0,
+                endTime: 0,
+                text: text
+            )]
+        }
+
+        // Split text into sentences using common sentence delimiters
+        let sentences = text.components(separatedBy: CharacterSet(charactersIn: ".!?\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        guard !sentences.isEmpty else {
+            return [TranscriptionSegment(
+                startTime: 0,
+                endTime: Double(duration),
+                text: text
+            )]
+        }
+
+        // Estimate time per character for proportional distribution
+        let totalChars = sentences.reduce(0) { $0 + $1.count }
+        let timePerChar = Double(duration) / Double(max(totalChars, 1))
+
+        var segments: [TranscriptionSegment] = []
+        var currentTime: Double = 0
+
+        for sentence in sentences {
+            let sentenceDuration = Double(sentence.count) * timePerChar
+            let endTime = min(currentTime + sentenceDuration, Double(duration))
+
+            segments.append(TranscriptionSegment(
+                startTime: currentTime,
+                endTime: endTime,
+                text: sentence
+            ))
+
+            currentTime = endTime
+        }
+
+        return segments
     }
 }
 
