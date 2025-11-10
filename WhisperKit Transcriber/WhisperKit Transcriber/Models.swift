@@ -7,6 +7,24 @@
 
 import Foundation
 
+// MARK: - Transcription Segment
+
+struct TranscriptionSegment: Codable, Identifiable {
+    let id: UUID
+    let startTime: TimeInterval  // In seconds
+    let endTime: TimeInterval
+    let text: String
+
+    init(id: UUID = UUID(), startTime: TimeInterval, endTime: TimeInterval, text: String) {
+        self.id = id
+        self.startTime = startTime
+        self.endTime = endTime
+        self.text = text
+    }
+}
+
+// MARK: - Whisper Model
+
 enum WhisperModel: String, CaseIterable, Identifiable {
     case auto = "auto"
     case tiny = "tiny"
@@ -147,8 +165,10 @@ class TranscriptionResult: Identifiable, Hashable {
     let createdAt: Date
     let modelUsed: String?
     var editedText: String
+    var segments: [TranscriptionSegment]  // Segment data for video player synchronization
+    let isVideoFile: Bool  // Whether this was transcribed from a video file
 
-    init(id: UUID = UUID(), sourcePath: String, fileName: String, text: String, duration: Int?, createdAt: Date, modelUsed: String? = nil) {
+    init(id: UUID = UUID(), sourcePath: String, fileName: String, text: String, duration: Int?, createdAt: Date, modelUsed: String? = nil, segments: [TranscriptionSegment] = [], isVideoFile: Bool = false) {
         self.id = id
         self.sourcePath = sourcePath
         self.fileName = fileName
@@ -157,6 +177,8 @@ class TranscriptionResult: Identifiable, Hashable {
         self.createdAt = createdAt
         self.modelUsed = modelUsed
         self.editedText = text
+        self.segments = segments
+        self.isVideoFile = isVideoFile
     }
 
     var displayText: String {

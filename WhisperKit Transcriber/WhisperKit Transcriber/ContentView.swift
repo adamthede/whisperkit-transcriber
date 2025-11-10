@@ -21,6 +21,8 @@ struct ContentView: View {
     @State private var includeTimestampInFilename = true
     @State private var alsoExportIndividualFiles = false
     @StateObject private var audioPlayer = AudioPlayerManager()
+    @State private var selectedVideoForPlayback: URL?
+    @State private var showVideoPlayer = false
 
     var body: some View {
         ScrollView {
@@ -74,6 +76,12 @@ struct ContentView: View {
         } message: {
             Text("Transcription exported successfully!")
         }
+        .sheet(isPresented: $showVideoPlayer) {
+            if let videoURL = selectedVideoForPlayback {
+                let transcription = transcriptionManager.completedTranscriptions.first(where: { $0.sourcePath == videoURL.path })
+                VideoPlayerView(videoURL: videoURL, transcription: transcription)
+            }
+        }
     }
 
     // MARK: - Drop Zone
@@ -91,13 +99,17 @@ struct ContentView: View {
                 )
 
             VStack(spacing: 12) {
-                Image(systemName: "waveform.circle.fill")
+                Image(systemName: "film.stack")
                     .font(.system(size: 48))
                     .foregroundColor(.secondary)
 
                 if transcriptionManager.audioFiles.isEmpty {
-                    Text("Drag audio files here")
+                    Text("Drag audio or video files here")
                         .font(.headline)
+                        .foregroundColor(.secondary)
+
+                    Text("Supports MP4, MOV, WAV, MP3, and more")
+                        .font(.caption)
                         .foregroundColor(.secondary)
 
                     Text("or")
@@ -138,9 +150,14 @@ struct ContentView: View {
                         file: file,
                         status: transcriptionManager.fileStatuses.first(where: { $0.url == file }),
                         audioPlayer: audioPlayer,
+                        transcriptionManager: transcriptionManager,
                         statusIcon: statusIcon(for:),
                         statusColor: statusColor(for:),
-                        formatDuration: formatDuration(_:)
+                        formatDuration: formatDuration(_:),
+                        onPlayVideo: {
+                            selectedVideoForPlayback = file
+                            showVideoPlayer = true
+                        }
                     )
                 }
             }
@@ -343,7 +360,12 @@ struct ContentView: View {
     private var transcriptionListView: some View {
         List(selection: $selectedTranscription) {
             ForEach(transcriptionManager.completedTranscriptions) { transcription in
-                TranscriptionRow(transcription: transcription)
+                TranscriptionRow(transcription: transcription, onPlayVideo: transcription.isVideoFile ? {
+                    if let url = URL(string: "file://\(transcription.sourcePath)") {
+                        selectedVideoForPlayback = url
+                        showVideoPlayer = true
+                    }
+                } : nil)
                     .tag(transcription)
             }
         }
@@ -419,24 +441,49 @@ struct ContentView: View {
         let file: URL
         let status: FileStatus?
         @ObservedObject var audioPlayer: AudioPlayerManager
+        @ObservedObject var transcriptionManager: TranscriptionManager
         let statusIcon: (FileStatus.ProcessingStatus?) -> String
         let statusColor: (FileStatus.ProcessingStatus?) -> Color
         let formatDuration: (Int) -> String
+        let onPlayVideo: () -> Void
 
         @State private var fileSize: String?
         @State private var audioDuration: TimeInterval?
 
+        private var isVideoFile: Bool {
+            transcriptionManager.isVideoFile(file)
+        }
+
         var body: some View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
+                    // Status icon
                     Image(systemName: statusIcon(status?.status))
                         .foregroundColor(statusColor(status?.status))
                         .frame(width: 20)
 
+                    // File type icon
+                    Image(systemName: isVideoFile ? "video.fill" : "waveform")
+                        .foregroundColor(isVideoFile ? .purple : .blue)
+                        .frame(width: 20)
+
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(file.lastPathComponent)
-                            .font(.subheadline)
-                            .lineLimit(1)
+                        HStack(spacing: 4) {
+                            Text(file.lastPathComponent)
+                                .font(.subheadline)
+                                .lineLimit(1)
+
+                            if isVideoFile {
+                                Text("VIDEO")
+                                    .font(.caption2)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 2)
+                                    .background(Color.purple)
+                                    .cornerRadius(3)
+                            }
+                        }
 
                         HStack(spacing: 12) {
                             if let size = fileSize {
@@ -459,20 +506,34 @@ struct ContentView: View {
 
                     Spacer()
 
-                    // Play button
-                    Button(action: {
-                        if audioPlayer.isPlaying && audioPlayer.currentFile == file {
-                            audioPlayer.pause()
-                        } else {
-                            audioPlayer.play(file: file)
+                    // Video player button (for videos with completed transcription)
+                    if isVideoFile, let transcription = status?.transcription, status?.status == .completed {
+                        Button(action: onPlayVideo) {
+                            Image(systemName: "play.rectangle.fill")
+                                .font(.title2)
+                                .foregroundColor(.purple)
                         }
-                    }) {
-                        Image(systemName: audioPlayer.isPlaying && audioPlayer.currentFile == file ? "pause.circle.fill" : "play.circle.fill")
-                            .font(.title2)
-                            .foregroundColor(.blue)
+                        .buttonStyle(.plain)
+                        .help("Play video with subtitles")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(status?.status == .processing)
+
+                    // Audio play button (for audio files or videos without transcription)
+                    if !isVideoFile || status?.status != .completed {
+                        Button(action: {
+                            if audioPlayer.isPlaying && audioPlayer.currentFile == file {
+                                audioPlayer.pause()
+                            } else {
+                                audioPlayer.play(file: file)
+                            }
+                        }) {
+                            Image(systemName: audioPlayer.isPlaying && audioPlayer.currentFile == file ? "pause.circle.fill" : "play.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.blue)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(status?.status == .processing)
+                        .help(isVideoFile ? "Preview audio" : "Play audio")
+                    }
                 }
             }
             .padding(.vertical, 4)
@@ -517,14 +578,27 @@ struct ContentView: View {
 
     struct TranscriptionRow: View {
         let transcription: TranscriptionResult
+        let onPlayVideo: (() -> Void)?
 
         var body: some View {
             HStack {
-                Image(systemName: "doc.text")
-                    .foregroundColor(.blue)
+                Image(systemName: transcription.isVideoFile ? "video.fill" : "doc.text")
+                    .foregroundColor(transcription.isVideoFile ? .purple : .blue)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(transcription.fileName)
-                        .font(.subheadline)
+                    HStack(spacing: 4) {
+                        Text(transcription.fileName)
+                            .font(.subheadline)
+                        if transcription.isVideoFile {
+                            Text("VIDEO")
+                                .font(.caption2)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 2)
+                                .background(Color.purple)
+                                .cornerRadius(3)
+                        }
+                    }
                     Text(transcription.preview)
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -535,6 +609,15 @@ struct ContentView: View {
                     Text(ContentView.formatDuration(duration))
                         .font(.caption)
                         .foregroundColor(.secondary)
+                }
+                if transcription.isVideoFile, let onPlayVideo = onPlayVideo {
+                    Button(action: onPlayVideo) {
+                        Image(systemName: "play.rectangle.fill")
+                            .font(.title3)
+                            .foregroundColor(.purple)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Play video with subtitles")
                 }
             }
             .padding(.vertical, 4)

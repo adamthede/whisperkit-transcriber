@@ -25,6 +25,7 @@ class TranscriptionManager: ObservableObject {
     @Published var showResults = false
 
     private let supportedAudioExtensions = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "wma"]
+    private let supportedVideoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "flv", "webm", "3gp"]
 
     func reset() {
         audioFiles = []
@@ -40,32 +41,46 @@ class TranscriptionManager: ObservableObject {
     }
 
     func loadAudioFiles(from directory: URL) {
-        audioFiles = findAudioFiles(in: directory)
+        audioFiles = findMediaFiles(in: directory)
     }
 
-    func findAudioFiles(in directory: URL) -> [URL] {
-        var audioFiles: [URL] = []
+    func findMediaFiles(in directory: URL) -> [URL] {
+        var mediaFiles: [URL] = []
 
         guard let enumerator = FileManager.default.enumerator(
             at: directory,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else {
-            return audioFiles
+            return mediaFiles
         }
 
         for case let fileURL as URL in enumerator {
-            if isAudioFile(fileURL) {
-                audioFiles.append(fileURL)
+            if isMediaFile(fileURL) {
+                mediaFiles.append(fileURL)
             }
         }
 
-        return audioFiles.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        return mediaFiles.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    // Backward compatibility
+    func findAudioFiles(in directory: URL) -> [URL] {
+        return findMediaFiles(in: directory)
     }
 
     func isAudioFile(_ url: URL) -> Bool {
         let pathExtension = url.pathExtension.lowercased()
         return supportedAudioExtensions.contains(pathExtension)
+    }
+
+    func isVideoFile(_ url: URL) -> Bool {
+        let pathExtension = url.pathExtension.lowercased()
+        return supportedVideoExtensions.contains(pathExtension)
+    }
+
+    func isMediaFile(_ url: URL) -> Bool {
+        return isAudioFile(url) || isVideoFile(url)
     }
 
     func startTranscription() async {
@@ -182,7 +197,49 @@ class TranscriptionManager: ObservableObject {
         print("📊 [\(fileName)] \(line)")
     }
 
-    private func transcribeFile(_ audioFile: URL, modelPath: String?) async throws -> TranscriptionResult {
+    private func transcribeFile(_ mediaFile: URL, modelPath: String?) async throws -> TranscriptionResult {
+        var fileToTranscribe = mediaFile
+        var extractedAudioURL: URL?
+        let isVideo = isVideoFile(mediaFile)
+
+        // Check if it's a video file - extract audio first
+        if isVideo {
+            await MainActor.run {
+                statusMessage = "Extracting audio from video: \(mediaFile.lastPathComponent)"
+            }
+
+            // Extract audio
+            do {
+                extractedAudioURL = try await AudioExtractor.shared.extractAudio(from: mediaFile)
+                fileToTranscribe = extractedAudioURL!
+                print("✅ Audio extracted to: \(fileToTranscribe.path)")
+            } catch {
+                print("❌ Failed to extract audio: \(error.localizedDescription)")
+                throw TranscriptionError.audioExtractionFailed(error.localizedDescription)
+            }
+        }
+
+        // Proceed with transcription
+        let result: TranscriptionResult
+        do {
+            result = try await transcribeAudioFile(fileToTranscribe, modelPath: modelPath, originalURL: mediaFile, isVideoFile: isVideo)
+
+            // Cleanup extracted audio after successful transcription
+            if let extractedURL = extractedAudioURL {
+                AudioExtractor.shared.cleanupExtractedAudio(at: extractedURL)
+            }
+
+            return result
+        } catch {
+            // Cleanup extracted audio on error
+            if let extractedURL = extractedAudioURL {
+                AudioExtractor.shared.cleanupExtractedAudio(at: extractedURL)
+            }
+            throw error
+        }
+    }
+
+    private func transcribeAudioFile(_ audioFile: URL, modelPath: String?, originalURL: URL, isVideoFile: Bool) async throws -> TranscriptionResult {
         // Check if whisperkit-cli is available
         guard let whisperkitPath = findWhisperKitCLI() else {
             let errorMsg = """
@@ -201,7 +258,7 @@ class TranscriptionManager: ObservableObject {
             throw TranscriptionError.whisperKitNotFound
         }
 
-        print("🎤 Transcribing: \(audioFile.lastPathComponent)")
+        print("🎤 Transcribing: \(originalURL.lastPathComponent)")
         print("   Using: \(whisperkitPath)")
 
         // Build command
@@ -483,19 +540,64 @@ class TranscriptionManager: ObservableObject {
             }
         }
 
-        // Get file duration if possible
-        let duration = getAudioDuration(audioFile)
+        // Get file duration if possible (use original URL for video files)
+        let duration = getAudioDuration(originalURL)
 
         let modelUsed = modelPath ?? (selectedModel == .auto ? "auto" : selectedModel.rawValue)
 
+        // Generate segments for video playback synchronization
+        let segments = generateSegments(from: transcriptionText, duration: duration)
+
         return TranscriptionResult(
-            sourcePath: audioFile.path,
-            fileName: audioFile.lastPathComponent,
+            sourcePath: originalURL.path,
+            fileName: originalURL.lastPathComponent,
             text: transcriptionText,
             duration: duration,
             createdAt: Date(),
-            modelUsed: modelUsed
+            modelUsed: modelUsed,
+            segments: segments,
+            isVideoFile: isVideoFile
         )
+    }
+
+    private func generateSegments(from text: String, duration: Int?) -> [TranscriptionSegment] {
+        // Generate approximate segments for video playback
+        // Split text into sentences and distribute evenly across the duration
+
+        guard !text.isEmpty else { return [] }
+
+        // Split by common sentence delimiters
+        let sentences = text.components(separatedBy: CharacterSet(charactersIn: ".!?"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !sentences.isEmpty else { return [] }
+
+        // If we don't have duration, create segments without timing
+        guard let totalDuration = duration, totalDuration > 0 else {
+            return sentences.enumerated().map { index, sentence in
+                TranscriptionSegment(
+                    startTime: 0,
+                    endTime: 0,
+                    text: sentence
+                )
+            }
+        }
+
+        // Distribute time evenly across sentences
+        // This is a simple approximation - real segments would come from whisperkit-cli
+        let secondsPerSentence = Double(totalDuration) / Double(sentences.count)
+
+        return sentences.enumerated().map { index, sentence in
+            let startTime = Double(index) * secondsPerSentence
+            let endTime = startTime + secondsPerSentence
+
+            return TranscriptionSegment(
+                startTime: startTime,
+                endTime: endTime,
+                text: sentence
+            )
+        }
     }
 
     private func findWhisperKitCLI() -> String? {
@@ -787,6 +889,7 @@ class TranscriptionManager: ObservableObject {
 enum TranscriptionError: LocalizedError {
     case whisperKitNotFound
     case transcriptionFailed(String)
+    case audioExtractionFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -794,6 +897,8 @@ enum TranscriptionError: LocalizedError {
             return "WhisperKit CLI not found. Please ensure whisperkit-cli is installed and available in your PATH."
         case .transcriptionFailed(let details):
             return "Transcription failed: \(details)"
+        case .audioExtractionFailed(let details):
+            return "Failed to extract audio from video: \(details)"
         }
     }
 }
