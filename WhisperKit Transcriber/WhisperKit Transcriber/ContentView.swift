@@ -20,6 +20,7 @@ struct ContentView: View {
     @State private var exportFormat: ExportFormat = .markdown
     @State private var includeTimestampInFilename = true
     @State private var alsoExportIndividualFiles = false
+    @State private var includeTimestampsInExport = true  // Include timestamps in export content
     @StateObject private var audioPlayer = AudioPlayerManager()
 
     var body: some View {
@@ -405,6 +406,13 @@ struct ContentView: View {
                     Toggle("Also export individual files", isOn: $alsoExportIndividualFiles)
                         .font(.caption)
                 }
+
+                // Show timestamp content toggle for formats that support timestamps
+                if [.json, .srt, .vtt, .html, .markdown, .plainText].contains(exportFormat) {
+                    Toggle("Include timestamps in export content", isOn: $includeTimestampsInExport)
+                        .font(.caption)
+                        .help("Include timestamp data for segments (uses real timestamps if available, otherwise estimates)")
+                }
             }
             .padding(.top, 4)
         }
@@ -624,7 +632,8 @@ struct ContentView: View {
                             format: exportFormat,
                             outputPath: url.path,
                             includeTimestamp: includeTimestampInFilename,
-                            alsoExportIndividual: alsoExportIndividualFiles
+                            alsoExportIndividual: alsoExportIndividualFiles,
+                            includeTimestampsInContent: includeTimestampsInExport
                         )
                         transcriptionManager.showSuccess = true
                     } catch {
@@ -646,7 +655,8 @@ struct ContentView: View {
                             format: exportFormat,
                             outputPath: url.path,
                             includeTimestamp: includeTimestampInFilename,
-                            alsoExportIndividual: alsoExportIndividualFiles
+                            alsoExportIndividual: alsoExportIndividualFiles,
+                            includeTimestampsInContent: includeTimestampsInExport
                         )
                         transcriptionManager.showSuccess = true
                     } catch {

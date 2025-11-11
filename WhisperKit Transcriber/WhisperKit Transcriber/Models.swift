@@ -162,8 +162,9 @@ class TranscriptionResult: Identifiable, Hashable {
     let createdAt: Date
     let modelUsed: String?
     var editedText: String
+    var realSegments: [TranscriptionSegment]?  // Real timestamps from WhisperKit if available
 
-    init(id: UUID = UUID(), sourcePath: String, fileName: String, text: String, duration: Int?, createdAt: Date, modelUsed: String? = nil) {
+    init(id: UUID = UUID(), sourcePath: String, fileName: String, text: String, duration: Int?, createdAt: Date, modelUsed: String? = nil, realSegments: [TranscriptionSegment]? = nil) {
         self.id = id
         self.sourcePath = sourcePath
         self.fileName = fileName
@@ -172,6 +173,7 @@ class TranscriptionResult: Identifiable, Hashable {
         self.createdAt = createdAt
         self.modelUsed = modelUsed
         self.editedText = text
+        self.realSegments = realSegments
     }
 
     var displayText: String {
@@ -240,7 +242,15 @@ struct TranscriptionSegment: Identifiable {
 
 extension TranscriptionResult {
     var segments: [TranscriptionSegment] {
+        // Use real segments if available, otherwise estimate
+        if let realSegments = realSegments, !realSegments.isEmpty {
+            return realSegments
+        }
         return estimateSegments(from: displayText, duration: duration)
+    }
+
+    var hasRealTimestamps: Bool {
+        return realSegments != nil && !realSegments!.isEmpty
     }
 
     private func estimateSegments(from text: String, duration: Int?) -> [TranscriptionSegment] {

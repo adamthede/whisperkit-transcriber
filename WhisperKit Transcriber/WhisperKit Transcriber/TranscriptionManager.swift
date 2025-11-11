@@ -456,20 +456,8 @@ class TranscriptionManager: ObservableObject {
             throw TranscriptionError.transcriptionFailed(error.localizedDescription)
         }
 
-        // Extract transcription text (after "Transcription of ..." line)
-        let lines = output.components(separatedBy: .newlines)
-        var transcriptionText = ""
-        var foundTranscription = false
-
-        for line in lines {
-            if foundTranscription {
-                transcriptionText += line + "\n"
-            } else if line.hasPrefix("Transcription of") {
-                foundTranscription = true
-            }
-        }
-
-        transcriptionText = transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Try to parse timestamp information from verbose output
+        let (transcriptionText, realSegments) = parseTranscriptionOutput(output)
 
         if transcriptionText.isEmpty {
             // If process was terminated but we have output, it might be in a different format
@@ -490,14 +478,93 @@ class TranscriptionManager: ObservableObject {
 
         let modelUsed = modelPath ?? (selectedModel == .auto ? "auto" : selectedModel.rawValue)
 
+        if let segments = realSegments, !segments.isEmpty {
+            print("✅ Extracted \(segments.count) segments with real timestamps")
+        }
+
         return TranscriptionResult(
             sourcePath: audioFile.path,
             fileName: audioFile.lastPathComponent,
             text: transcriptionText,
             duration: duration,
             createdAt: Date(),
-            modelUsed: modelUsed
+            modelUsed: modelUsed,
+            realSegments: realSegments
         )
+    }
+
+    private func parseTranscriptionOutput(_ output: String) -> (String, [TranscriptionSegment]?) {
+        let lines = output.components(separatedBy: .newlines)
+        var transcriptionText = ""
+        var foundTranscription = false
+        var segments: [TranscriptionSegment] = []
+
+        // Try to detect timestamp format: [00:00.000 --> 00:05.000] text
+        let timestampPattern = #"\[(\d+:\d+\.\d+)\s*-->\s*(\d+:\d+\.\d+)\]\s*(.+)"#
+        let timestampRegex = try? NSRegularExpression(pattern: timestampPattern, options: [])
+
+        for line in lines {
+            if foundTranscription {
+                // Try to parse line with timestamps
+                if let regex = timestampRegex,
+                   let match = regex.firstMatch(in: line, options: [], range: NSRange(line.startIndex..., in: line)) {
+                    // Extract timestamp and text
+                    if let startRange = Range(match.range(at: 1), in: line),
+                       let endRange = Range(match.range(at: 2), in: line),
+                       let textRange = Range(match.range(at: 3), in: line) {
+                        let startTimeStr = String(line[startRange])
+                        let endTimeStr = String(line[endRange])
+                        let text = String(line[textRange])
+
+                        if let startTime = parseTimestamp(startTimeStr),
+                           let endTime = parseTimestamp(endTimeStr) {
+                            segments.append(TranscriptionSegment(
+                                startTime: startTime,
+                                endTime: endTime,
+                                text: text
+                            ))
+                        }
+
+                        transcriptionText += text + "\n"
+                    }
+                } else {
+                    // No timestamp, just add the text
+                    transcriptionText += line + "\n"
+                }
+            } else if line.hasPrefix("Transcription of") {
+                foundTranscription = true
+            }
+        }
+
+        transcriptionText = transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Only return segments if we found at least some
+        let realSegments = segments.isEmpty ? nil : segments
+        return (transcriptionText, realSegments)
+    }
+
+    private func parseTimestamp(_ timeStr: String) -> Double? {
+        // Parse format: MM:SS.mmm or HH:MM:SS.mmm
+        let components = timeStr.components(separatedBy: ":")
+
+        if components.count == 2 {
+            // MM:SS.mmm
+            guard let minutes = Double(components[0]),
+                  let seconds = Double(components[1]) else {
+                return nil
+            }
+            return minutes * 60 + seconds
+        } else if components.count == 3 {
+            // HH:MM:SS.mmm
+            guard let hours = Double(components[0]),
+                  let minutes = Double(components[1]),
+                  let seconds = Double(components[2]) else {
+                return nil
+            }
+            return hours * 3600 + minutes * 60 + seconds
+        }
+
+        return nil
     }
 
     private func findWhisperKitCLI() -> String? {
@@ -608,7 +675,7 @@ class TranscriptionManager: ObservableObject {
         return nil
     }
 
-    func exportTranscriptions(format: ExportFormat, outputPath: String, includeTimestamp: Bool = true, alsoExportIndividual: Bool = false) throws {
+    func exportTranscriptions(format: ExportFormat, outputPath: String, includeTimestamp: Bool = true, alsoExportIndividual: Bool = false, includeTimestampsInContent: Bool = true) throws {
         let transcriptions = completedTranscriptions
 
         // Add timestamp to filename if requested
@@ -616,17 +683,17 @@ class TranscriptionManager: ObservableObject {
 
         switch format {
         case .markdown:
-            try exportMarkdown(transcriptions: transcriptions, outputPath: finalOutputPath)
+            try exportMarkdown(transcriptions: transcriptions, outputPath: finalOutputPath, includeTimestamps: includeTimestampsInContent)
         case .plainText:
-            try exportPlainText(transcriptions: transcriptions, outputPath: finalOutputPath)
+            try exportPlainText(transcriptions: transcriptions, outputPath: finalOutputPath, includeTimestamps: includeTimestampsInContent)
         case .json:
-            try exportJSON(transcriptions: transcriptions, outputPath: finalOutputPath)
+            try exportJSON(transcriptions: transcriptions, outputPath: finalOutputPath, includeTimestamps: includeTimestampsInContent)
         case .srt:
             try exportSRT(transcriptions: transcriptions, outputPath: finalOutputPath)
         case .vtt:
             try exportVTT(transcriptions: transcriptions, outputPath: finalOutputPath)
         case .html:
-            try exportHTML(transcriptions: transcriptions, outputPath: finalOutputPath)
+            try exportHTML(transcriptions: transcriptions, outputPath: finalOutputPath, includeTimestamps: includeTimestampsInContent)
         case .docx:
             try exportDOCX(transcriptions: transcriptions, outputPath: finalOutputPath)
         case .pdf:
@@ -655,7 +722,7 @@ class TranscriptionManager: ObservableObject {
         return "\(directory)/\(timestamp)_\(filename).\(fileExtension)"
     }
 
-    private func exportMarkdown(transcriptions: [TranscriptionResult], outputPath: String) throws {
+    private func exportMarkdown(transcriptions: [TranscriptionResult], outputPath: String, includeTimestamps: Bool = false) throws {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
@@ -666,6 +733,7 @@ class TranscriptionManager: ObservableObject {
         markdown += "combined_from: \(transcriptions.count) files\n"
         markdown += "created_utc: \"\(formatter.string(from: Date()))\"\n"
         markdown += "format: combined_markdown\n"
+        markdown += "includes_timestamps: \(includeTimestamps)\n"
         markdown += "---\n\n"
 
         markdown += "# Combined Audio Transcription\n\n"
@@ -677,10 +745,25 @@ class TranscriptionManager: ObservableObject {
 
             // Add metadata if available
             if let duration = transcription.duration {
-                markdown += "*Duration: \(TranscriptionManager.formatDuration(duration))*\n\n"
+                markdown += "*Duration: \(TranscriptionManager.formatDuration(duration))*\n"
+                if includeTimestamps && transcription.hasRealTimestamps {
+                    markdown += " *(Real timestamps)*"
+                }
+                markdown += "\n\n"
             }
 
-            markdown += "\(transcription.displayText)\n\n"
+            // Include timestamped segments if requested
+            if includeTimestamps {
+                let segments = transcription.segments
+                for segment in segments {
+                    let startTime = TranscriptionManager.formatDuration(Int(segment.startTime))
+                    let endTime = TranscriptionManager.formatDuration(Int(segment.endTime))
+                    markdown += "`[\(startTime) - \(endTime)]` \(segment.text)\n\n"
+                }
+            } else {
+                markdown += "\(transcription.displayText)\n\n"
+            }
+
             markdown += "---\n\n"
         }
 
@@ -688,7 +771,7 @@ class TranscriptionManager: ObservableObject {
         try markdown.write(toFile: outputPath, atomically: true, encoding: .utf8)
     }
 
-    private func exportPlainText(transcriptions: [TranscriptionResult], outputPath: String) throws {
+    private func exportPlainText(transcriptions: [TranscriptionResult], outputPath: String, includeTimestamps: Bool = false) throws {
         var text = "Combined Audio Transcription\n"
         text += "\(String(repeating: "=", count: 30))\n\n"
 
@@ -696,16 +779,32 @@ class TranscriptionManager: ObservableObject {
             text += "\(transcription.fileName)\n"
             text += "\(String(repeating: "-", count: transcription.fileName.count))\n\n"
             if let duration = transcription.duration {
-                text += "Duration: \(TranscriptionManager.formatDuration(duration))\n\n"
+                text += "Duration: \(TranscriptionManager.formatDuration(duration))"
+                if includeTimestamps && transcription.hasRealTimestamps {
+                    text += " (Real timestamps)"
+                }
+                text += "\n\n"
             }
-            text += "\(transcription.displayText)\n\n"
-            text += "\(String(repeating: "-", count: 50))\n\n"
+
+            // Include timestamped segments if requested
+            if includeTimestamps {
+                let segments = transcription.segments
+                for segment in segments {
+                    let startTime = TranscriptionManager.formatDuration(Int(segment.startTime))
+                    let endTime = TranscriptionManager.formatDuration(Int(segment.endTime))
+                    text += "[\(startTime) - \(endTime)] \(segment.text)\n"
+                }
+            } else {
+                text += "\(transcription.displayText)\n"
+            }
+
+            text += "\n\(String(repeating: "-", count: 50))\n\n"
         }
 
         try text.write(toFile: outputPath, atomically: true, encoding: .utf8)
     }
 
-    private func exportJSON(transcriptions: [TranscriptionResult], outputPath: String) throws {
+    private func exportJSON(transcriptions: [TranscriptionResult], outputPath: String, includeTimestamps: Bool = false) throws {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
@@ -713,17 +812,34 @@ class TranscriptionManager: ObservableObject {
             "metadata": [
                 "combined_from": transcriptions.count,
                 "created_utc": formatter.string(from: Date()),
-                "format": "json"
+                "format": "json",
+                "includes_timestamps": includeTimestamps
             ],
             "transcriptions": transcriptions.map { transcription in
-                [
+                var transcriptionDict: [String: Any] = [
                     "source_path": transcription.sourcePath,
                     "file_name": transcription.fileName,
                     "text": transcription.displayText,
                     "duration_seconds": transcription.duration as Any,
                     "created_at": formatter.string(from: transcription.createdAt),
-                    "model_used": transcription.modelUsed as Any
+                    "model_used": transcription.modelUsed as Any,
+                    "has_real_timestamps": transcription.hasRealTimestamps
                 ]
+
+                // Include segments if timestamps requested
+                if includeTimestamps {
+                    let segments = transcription.segments
+                    transcriptionDict["segments"] = segments.map { segment in
+                        [
+                            "start_time": segment.startTime,
+                            "end_time": segment.endTime,
+                            "text": segment.text,
+                            "speaker": segment.speaker as Any
+                        ]
+                    }
+                }
+
+                return transcriptionDict
             }
         ]
 
@@ -827,7 +943,7 @@ class TranscriptionManager: ObservableObject {
 
     // MARK: - HTML Export
 
-    private func exportHTML(transcriptions: [TranscriptionResult], outputPath: String) throws {
+    private func exportHTML(transcriptions: [TranscriptionResult], outputPath: String, includeTimestamps: Bool = false) throws {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
@@ -867,6 +983,15 @@ class TranscriptionManager: ObservableObject {
                     line-height: 1.6;
                     margin-bottom: 30px;
                 }
+                .segment {
+                    margin-bottom: 10px;
+                }
+                .timestamp {
+                    color: #0066cc;
+                    font-family: monospace;
+                    font-size: 0.85em;
+                    margin-right: 8px;
+                }
                 .separator {
                     border-top: 1px solid #ddd;
                     margin: 30px 0;
@@ -876,6 +1001,7 @@ class TranscriptionManager: ObservableObject {
                     h1 { color: #d4d4d4; border-bottom-color: #555; }
                     h2 { color: #b0b0b0; }
                     .metadata { color: #808080; }
+                    .timestamp { color: #4d9fff; }
                     .separator { border-top-color: #555; }
                 }
             </style>
@@ -885,6 +1011,7 @@ class TranscriptionManager: ObservableObject {
             <div class="metadata">
                 <p>Generated: \(formatter.string(from: Date()))</p>
                 <p>Files: \(transcriptions.count)</p>
+                <p>Timestamps: \(includeTimestamps ? "Included" : "Not included")</p>
             </div>
 
         """
@@ -895,14 +1022,31 @@ class TranscriptionManager: ObservableObject {
             html += "<h2>\(escapeHTML(fileName))</h2>\n"
 
             if let duration = transcription.duration {
-                html += "<div class=\"metadata\">Duration: \(TranscriptionManager.formatDuration(duration))</div>\n"
+                html += "<div class=\"metadata\">Duration: \(TranscriptionManager.formatDuration(duration))"
+                if includeTimestamps && transcription.hasRealTimestamps {
+                    html += " (Real timestamps)"
+                }
+                html += "</div>\n"
             }
 
-            // Escape HTML entities and convert newlines to <br>
-            let escapedText = escapeHTML(transcription.displayText)
-                .replacingOccurrences(of: "\n", with: "<br>\n")
+            // Include timestamped segments if requested
+            if includeTimestamps {
+                let segments = transcription.segments
+                for segment in segments {
+                    let startTime = TranscriptionManager.formatDuration(Int(segment.startTime))
+                    let endTime = TranscriptionManager.formatDuration(Int(segment.endTime))
+                    html += "<div class=\"segment\">\n"
+                    html += "<span class=\"timestamp\">[\(startTime) - \(endTime)]</span>\n"
+                    html += "<span>\(escapeHTML(segment.text))</span>\n"
+                    html += "</div>\n"
+                }
+            } else {
+                // Escape HTML entities and convert newlines to <br>
+                let escapedText = escapeHTML(transcription.displayText)
+                    .replacingOccurrences(of: "\n", with: "<br>\n")
+                html += "<p>\(escapedText)</p>\n"
+            }
 
-            html += "<p>\(escapedText)</p>\n"
             html += "</div>\n"
             html += "<div class=\"separator\"></div>\n"
         }
