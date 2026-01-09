@@ -20,7 +20,12 @@ struct ContentView: View {
     @State private var exportFormat: ExportFormat = .markdown
     @State private var includeTimestampInFilename = true
     @State private var alsoExportIndividualFiles = false
+
     @StateObject private var audioPlayer = AudioPlayerManager()
+
+    // Video Player State
+    @State private var selectedVideoForPlayback: URL?
+    @State private var showVideoPlayer = false
 
     var body: some View {
         ScrollView {
@@ -72,7 +77,18 @@ struct ContentView: View {
         .alert("Export Successful", isPresented: $transcriptionManager.showSuccess) {
             Button("OK", role: .cancel) { }
         } message: {
+
             Text("Transcription exported successfully!")
+        }
+        .sheet(isPresented: $showVideoPlayer) {
+            if let videoURL = selectedVideoForPlayback {
+                if let transcription = transcriptionManager.completedTranscriptions.first(where: { $0.sourcePath == videoURL.path }) {
+                    VideoPlayerView(videoURL: videoURL, transcription: transcription)
+                } else {
+                    // Fallback if no transcription found (just play video)
+                    VideoPlayerView(videoURL: videoURL, transcription: nil)
+                }
+            }
         }
     }
 
@@ -138,9 +154,14 @@ struct ContentView: View {
                         file: file,
                         status: transcriptionManager.fileStatuses.first(where: { $0.url == file }),
                         audioPlayer: audioPlayer,
+                        isVideo: transcriptionManager.isVideoFile(file),
                         statusIcon: statusIcon(for:),
                         statusColor: statusColor(for:),
-                        formatDuration: formatDuration(_:)
+                        formatDuration: formatDuration(_:),
+                        onPlayVideo: { url in
+                            selectedVideoForPlayback = url
+                            showVideoPlayer = true
+                        }
                     )
                 }
             }
@@ -419,9 +440,11 @@ struct ContentView: View {
         let file: URL
         let status: FileStatus?
         @ObservedObject var audioPlayer: AudioPlayerManager
+        let isVideo: Bool
         let statusIcon: (FileStatus.ProcessingStatus?) -> String
         let statusColor: (FileStatus.ProcessingStatus?) -> Color
         let formatDuration: (Int) -> String
+        let onPlayVideo: (URL) -> Void
 
         @State private var fileSize: String?
         @State private var audioDuration: TimeInterval?
@@ -461,13 +484,17 @@ struct ContentView: View {
 
                     // Play button
                     Button(action: {
-                        if audioPlayer.isPlaying && audioPlayer.currentFile == file {
-                            audioPlayer.pause()
+                        if isVideo {
+                            onPlayVideo(file)
                         } else {
-                            audioPlayer.play(file: file)
+                            if audioPlayer.isPlaying && audioPlayer.currentFile == file {
+                                audioPlayer.pause()
+                            } else {
+                                audioPlayer.play(file: file)
+                            }
                         }
                     }) {
-                        Image(systemName: audioPlayer.isPlaying && audioPlayer.currentFile == file ? "pause.circle.fill" : "play.circle.fill")
+                        Image(systemName: isVideo ? "play.rectangle.fill" : (audioPlayer.isPlaying && audioPlayer.currentFile == file ? "pause.circle.fill" : "play.circle.fill"))
                             .font(.title2)
                             .foregroundColor(.blue)
                     }
@@ -685,7 +712,7 @@ struct ContentView: View {
                     for url in urls {
                         if url.hasDirectoryPath {
                             audioFiles.append(contentsOf: transcriptionManager.findAudioFiles(in: url))
-                        } else if transcriptionManager.isAudioFile(url) {
+                        } else if transcriptionManager.isAudioFile(url) || transcriptionManager.isVideoFile(url) {
                             audioFiles.append(url)
                         }
                     }
