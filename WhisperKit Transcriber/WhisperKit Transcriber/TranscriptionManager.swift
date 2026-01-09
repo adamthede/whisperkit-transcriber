@@ -24,7 +24,8 @@ class TranscriptionManager: ObservableObject {
     @Published var showSuccess = false
     @Published var showResults = false
 
-    private let supportedAudioExtensions = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "wma"]
+    private let supportedVideoExtensions = ["mp4", "mov"]
+    private let supportedAudioExtensions = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "wma", "mp4", "mov"]
 
     func reset() {
         audioFiles = []
@@ -66,6 +67,11 @@ class TranscriptionManager: ObservableObject {
     func isAudioFile(_ url: URL) -> Bool {
         let pathExtension = url.pathExtension.lowercased()
         return supportedAudioExtensions.contains(pathExtension)
+    }
+
+    func isVideoFile(_ url: URL) -> Bool {
+        let pathExtension = url.pathExtension.lowercased()
+        return supportedVideoExtensions.contains(pathExtension)
     }
 
     func startTranscription() async {
@@ -201,15 +207,44 @@ class TranscriptionManager: ObservableObject {
             throw TranscriptionError.whisperKitNotFound
         }
 
+        // Check if we need to extract audio first
+        var processAudioFile = audioFile
+        var extractedAudioURL: URL?
+
+        if isVideoFile(audioFile) {
+            await MainActor.run {
+                statusMessage = "Extracting audio from video..."
+            }
+            do {
+                extractedAudioURL = try await AudioExtractor.shared.extractAudio(from: audioFile)
+                processAudioFile = extractedAudioURL!
+                print("✅ Audio extracted to: \(processAudioFile.path)")
+            } catch {
+                print("❌ Audio extraction failed: \(error.localizedDescription)")
+                throw error
+            }
+        }
+
+        defer {
+             if let extractedURL = extractedAudioURL {
+                 AudioExtractor.shared.cleanup(url: extractedURL)
+             }
+         }
+
         print("🎤 Transcribing: \(audioFile.lastPathComponent)")
         print("   Using: \(whisperkitPath)")
+
+        let uniqueReportDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: uniqueReportDir, withIntermediateDirectories: true, attributes: nil)
 
         // Build command
         var arguments: [String] = [
             "transcribe",
-            "--audio-path", audioFile.path,
+            "--audio-path", processAudioFile.path,
             "--language", selectedLanguage.code,
-            "--verbose"
+            "--verbose",
+            "--report",
+            "--report-path", uniqueReportDir.path
         ]
 
         // Add model selection
@@ -268,6 +303,16 @@ class TranscriptionManager: ObservableObject {
                 for line in allLines.dropLast() {
                     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty {
+                        // Filter out progress lines to prevent memory exhaustion
+                        // These lines are extremely frequent (1000s per transcription)
+                        if trimmed.contains("Elapsed Time:") && trimmed.contains("Remaining:") {
+                            continue
+                        }
+                        // Also filter out raw control sequences that might appear
+                        if trimmed.contains("[K") && trimmed.contains("=") {
+                            continue
+                        }
+
                         lines.append(trimmed)
                     }
                 }
@@ -295,14 +340,16 @@ class TranscriptionManager: ObservableObject {
         }
 
         let collector = OutputCollector()
+        let errorCollector = OutputCollector()
+
+        // Create pipe for standard error as well
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
 
         // Read output in real-time with proper handling
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            if data.isEmpty {
-                // EOF reached
-                return
-            }
+            if data.isEmpty { return } // EOF
 
             if let text = String(data: data, encoding: .utf8) {
                 Task {
@@ -318,7 +365,19 @@ class TranscriptionManager: ObservableObject {
             }
         }
 
-        let output: String
+        // Read stderr in real-time
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty { return } // EOF
+
+            if let text = String(data: data, encoding: .utf8) {
+                Task {
+                    await errorCollector.append(text)
+                }
+            }
+        }
+
+        var output: String
         do {
             try process.run()
 
@@ -410,9 +469,26 @@ class TranscriptionManager: ObservableObject {
 
             // Stop reading
             pipe.fileHandleForReading.readabilityHandler = nil
+            errorPipe.fileHandleForReading.readabilityHandler = nil
 
             // Get any remaining output
             let remainingData = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let text = String(data: remainingData, encoding: .utf8) {
+                await collector.append(text)
+            }
+
+            let remainingErrorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            if let text = String(data: remainingErrorData, encoding: .utf8) {
+                await errorCollector.append(text)
+            }
+
+            output = await collector.getBuffer()
+            let errorOutput = await errorCollector.getBuffer()
+
+            print("📊 Process finished with exit code: \(process.terminationStatus)")
+            if !errorOutput.isEmpty {
+                print("⚠️ Process Stderr Output:\n\(errorOutput)")
+            }
             if let remainingText = String(data: remainingData, encoding: .utf8), !remainingText.isEmpty {
                 await collector.addRemaining(remainingText)
             }
@@ -454,20 +530,102 @@ class TranscriptionManager: ObservableObject {
             throw TranscriptionError.transcriptionFailed(error.localizedDescription)
         }
 
-        // Extract transcription text (after "Transcription of ..." line)
-        let lines = output.components(separatedBy: .newlines)
-        var transcriptionText = ""
-        var foundTranscription = false
+        // Parse JSON report to get segments (in a detached task to avoid blocking main thread)
+        let parsingTask = Task.detached(priority: .userInitiated) { () -> ([TranscriptionSegment], String) in
+            var segments: [TranscriptionSegment] = []
+            var transcriptionText = ""
+            var reportFile: URL? = nil
 
-        for line in lines {
-            if foundTranscription {
-                transcriptionText += line + "\n"
-            } else if line.hasPrefix("Transcription of") {
-                foundTranscription = true
+            // Find the json file in the unique directory
+            do {
+                let files = try FileManager.default.contentsOfDirectory(at: uniqueReportDir, includingPropertiesForKeys: nil)
+                reportFile = files.first(where: { $0.pathExtension == "json" })
+            } catch {
+                print("⚠️ Failed to list contents of report directory: \(error)")
             }
+
+            if let reportURL = reportFile {
+                 do {
+                     let data = try Data(contentsOf: reportURL)
+                     if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+
+                         // Try standard "segments" key first (WhisperKit default)
+                         if let segmentsJson = json["segments"] as? [[String: Any]] {
+                             var idCounter = 0
+                             for result in segmentsJson {
+                                 if let text = result["text"] as? String,
+                                    let start = result["start"] as? Double,
+                                    let end = result["end"] as? Double {
+                                     let cleanedText = TranscriptionManager.cleanWhisperTokens(from: text)
+                                     let segment = TranscriptionSegment(
+                                         id: idCounter,
+                                         start: start,
+                                         end: end,
+                                         text: cleanedText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                                     )
+                                     segments.append(segment)
+                                     transcriptionText += segment.text + " " // Use space for continuity
+                                     idCounter += 1
+                                 }
+                             }
+                             // Clean up double spaces if any
+                             transcriptionText = transcriptionText.replacingOccurrences(of: "  ", with: " ")
+
+                         } else if let results = json["results"] as? [[String: Any]] {
+                             // Fallback to "results" key
+                             var idCounter = 0
+                             for result in results {
+                                 if let text = result["text"] as? String,
+                                    let start = result["start"] as? Double,
+                                    let end = result["end"] as? Double {
+                                     let cleanedText = TranscriptionManager.cleanWhisperTokens(from: text)
+                                     let segment = TranscriptionSegment(
+                                         id: idCounter,
+                                         start: start,
+                                         end: end,
+                                         text: cleanedText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                                     )
+                                     segments.append(segment)
+                                     transcriptionText += segment.text + " "
+                                     idCounter += 1
+                                 }
+                             }
+                         } else {
+                             // If no segments found, maybe there is a top-level text?
+                             if let fullText = json["text"] as? String {
+                                  transcriptionText = TranscriptionManager.cleanWhisperTokens(from: fullText)
+                             }
+                         }
+                     }
+                 } catch {
+                     print("⚠️ Failed to parse report.json: \(error)")
+                 }
+            }
+            return (segments, transcriptionText)
         }
 
-        transcriptionText = transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsingResult = await parsingTask.value
+
+        let segments = parsingResult.0
+        var transcriptionText = parsingResult.1
+
+
+
+        // Fallback to text parsing from output if JSON fails or returned empty text
+        if transcriptionText.isEmpty {
+            transcriptionText = extractTextFromOutput(output)
+        }
+
+        // Clean any remaining artifacts if parsing failed
+        // (Note: The JSON parsing above already cleans individual segments)
+        if segments.isEmpty {
+            transcriptionText = TranscriptionManager.cleanWhisperTokens(from: transcriptionText)
+        }
+
+        // Clean up report directory
+        try? FileManager.default.removeItem(at: uniqueReportDir)
+
+        transcriptionText = transcriptionText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
 
         if transcriptionText.isEmpty {
             // If process was terminated but we have output, it might be in a different format
@@ -492,10 +650,42 @@ class TranscriptionManager: ObservableObject {
             sourcePath: audioFile.path,
             fileName: audioFile.lastPathComponent,
             text: transcriptionText,
+            segments: segments,
             duration: duration,
             createdAt: Date(),
             modelUsed: modelUsed
         )
+    }
+
+    private func extractTextFromOutput(_ output: String) -> String {
+        let lines = output.components(separatedBy: .newlines)
+        var text = ""
+        var foundTranscription = false
+
+        for line in lines {
+            if foundTranscription {
+                text += line + "\n"
+            } else if line.hasPrefix("Transcription of") {
+                foundTranscription = true
+            }
+        }
+        return text
+    }
+
+    private static func cleanWhisperTokens(from text: String) -> String {
+        // Remove Whisper special tokens like <|startoftranscript|>, <|en|>, <|0.00|>, etc.
+        // Pattern matches <| followed by any characters until |>
+        let pattern = "<\\|[^|]+\\|>"
+
+        do {
+            let regex = try NSRegularExpression(pattern: pattern, options: [])
+            let range = NSRange(location: 0, length: text.utf16.count)
+            let cleaned = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
+            return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            print("Error creating regex for cleaning tokens: \(error)")
+            return text
+        }
     }
 
     private func findWhisperKitCLI() -> String? {
@@ -614,11 +804,13 @@ class TranscriptionManager: ObservableObject {
 
         switch format {
         case .markdown:
-            try exportMarkdown(transcriptions: transcriptions, outputPath: finalOutputPath)
+            try exportMarkdown(transcriptions: transcriptions, outputPath: finalOutputPath, includeTimestamp: includeTimestamp)
         case .plainText:
-            try exportPlainText(transcriptions: transcriptions, outputPath: finalOutputPath)
+            try exportPlainText(transcriptions: transcriptions, outputPath: finalOutputPath, includeTimestamp: includeTimestamp)
         case .json:
             try exportJSON(transcriptions: transcriptions, outputPath: finalOutputPath)
+        case .srt:
+            try exportSRT(transcriptions: transcriptions, outputPath: finalOutputPath)
         case .individualFiles:
             try exportIndividualFiles(transcriptions: transcriptions, outputDir: outputPath, includeTimestamp: includeTimestamp)
         }
@@ -643,7 +835,7 @@ class TranscriptionManager: ObservableObject {
         return "\(directory)/\(timestamp)_\(filename).\(fileExtension)"
     }
 
-    private func exportMarkdown(transcriptions: [TranscriptionResult], outputPath: String) throws {
+    private func exportMarkdown(transcriptions: [TranscriptionResult], outputPath: String, includeTimestamp: Bool) throws {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
@@ -668,7 +860,12 @@ class TranscriptionManager: ObservableObject {
                 markdown += "*Duration: \(TranscriptionManager.formatDuration(duration))*\n\n"
             }
 
-            markdown += "\(transcription.displayText)\n\n"
+            if includeTimestamp, !transcription.segments.isEmpty {
+                 markdown += formatToTimestampedText(transcription.segments)
+            } else {
+                 markdown += "\(transcription.displayText)\n\n"
+            }
+
             markdown += "---\n\n"
         }
 
@@ -676,7 +873,7 @@ class TranscriptionManager: ObservableObject {
         try markdown.write(toFile: outputPath, atomically: true, encoding: .utf8)
     }
 
-    private func exportPlainText(transcriptions: [TranscriptionResult], outputPath: String) throws {
+    private func exportPlainText(transcriptions: [TranscriptionResult], outputPath: String, includeTimestamp: Bool) throws {
         var text = "Combined Audio Transcription\n"
         text += "\(String(repeating: "=", count: 30))\n\n"
 
@@ -686,7 +883,13 @@ class TranscriptionManager: ObservableObject {
             if let duration = transcription.duration {
                 text += "Duration: \(TranscriptionManager.formatDuration(duration))\n\n"
             }
-            text += "\(transcription.displayText)\n\n"
+
+            if includeTimestamp, !transcription.segments.isEmpty {
+                text += formatToTimestampedText(transcription.segments)
+            } else {
+                text += "\(transcription.displayText)\n\n"
+            }
+
             text += "\(String(repeating: "-", count: 50))\n\n"
         }
 
@@ -748,10 +951,74 @@ class TranscriptionManager: ObservableObject {
             }
             markdown += "---\n\n"
             markdown += "# \(baseFileName)\n\n"
-            markdown += "\(transcription.displayText)\n"
+
+            if includeTimestamp, !transcription.segments.isEmpty {
+                markdown += formatToTimestampedText(transcription.segments)
+            } else {
+                markdown += "\(transcription.displayText)\n"
+            }
 
             try markdown.write(toFile: fileURL.path, atomically: true, encoding: .utf8)
         }
+    }
+
+    private func exportSRT(transcriptions: [TranscriptionResult], outputPath: String) throws {
+        var srtContent = ""
+
+        for (index, transcription) in transcriptions.enumerated() {
+            // For combined SRT, we might want to separate them or just append.
+            // Standard SRT doesn't support "multiple files" well in one file.
+            // But if the user selects multiple files and chooses SRT (Combined), we will just append them
+            // with a note, or maybe reset the counter?
+            // Actually, usually you export SRT per file.
+            // But if "Combined" is chosen, let's just append them sequentially.
+
+            if index > 0 {
+                srtContent += "\n\n"
+            }
+
+            srtContent += formatToSRT(transcription.segments)
+        }
+
+        try srtContent.write(toFile: outputPath, atomically: true, encoding: .utf8)
+    }
+
+    private func formatToSRT(_ segments: [TranscriptionSegment]) -> String {
+        var output = ""
+        for (index, segment) in segments.enumerated() {
+            let sequenceNumber = index + 1
+            let startTime = createSRTTimestamp(segment.start)
+            let endTime = createSRTTimestamp(segment.end)
+
+            // Handle multiline text in segment if any locally
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            output += "\(sequenceNumber)\n"
+            output += "\(startTime) --> \(endTime)\n"
+            output += "\(text)\n\n"
+        }
+        return output
+    }
+
+    private func createSRTTimestamp(_ seconds: Double) -> String {
+        let hrs = Int(seconds) / 3600
+        let mins = (Int(seconds) % 3600) / 60
+        let secs = Int(seconds) % 60
+        let millis = Int((seconds.truncatingRemainder(dividingBy: 1)) * 1000)
+
+        return String(format: "%02d:%02d:%02d,%03d", hrs, mins, secs, millis)
+    }
+
+    private func formatToTimestampedText(_ segments: [TranscriptionSegment]) -> String {
+        var output = ""
+        for segment in segments {
+            let timestamp = String(format: "[%02d:%02d:%02d]",
+                                   Int(segment.start) / 3600,
+                                   (Int(segment.start) % 3600) / 60,
+                                   Int(segment.start) % 60)
+            output += "\(timestamp) \(segment.text.trimmingCharacters(in: .whitespacesAndNewlines))\n"
+        }
+        return output + "\n"
     }
 
     static func formatDuration(_ seconds: Int) -> String {
