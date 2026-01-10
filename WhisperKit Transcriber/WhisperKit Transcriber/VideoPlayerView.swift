@@ -142,6 +142,8 @@ struct VideoPlayerView: View {
     private func setupPlayer() {
         let playerItem = AVPlayerItem(url: videoURL)
         player = AVPlayer(playerItem: playerItem)
+        player?.play()
+        isPlaying = true
 
         // Observe duration
         Task {
