@@ -48,6 +48,9 @@ enum ExportFormat: String, CaseIterable, Identifiable {
     case plainText = "txt"
     case json = "json"
     case srt = "srt"
+    case vtt = "vtt"
+    case html = "html"
+    case pdf = "pdf"
     case individualFiles = "individual"
 
     var id: String { rawValue }
@@ -58,6 +61,9 @@ enum ExportFormat: String, CaseIterable, Identifiable {
         case .plainText: return "Plain Text (Combined)"
         case .json: return "JSON (Structured)"
         case .srt: return "SRT (Subtitles)"
+        case .vtt: return "WebVTT (Subtitles)"
+        case .html: return "HTML (Web Page)"
+        case .pdf: return "PDF (Document)"
         case .individualFiles: return "Individual Files (One per audio)"
         }
     }
@@ -68,6 +74,9 @@ enum ExportFormat: String, CaseIterable, Identifiable {
         case .plainText: return "txt"
         case .json: return "json"
         case .srt: return "srt"
+        case .vtt: return "vtt"
+        case .html: return "html"
+        case .pdf: return "pdf"
         case .individualFiles: return "md"
         }
     }
