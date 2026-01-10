@@ -6,6 +6,10 @@
 //
 
 import Foundation
+import AVFoundation
+import PDFKit
+import CoreText
+import CoreGraphics
 import SwiftUI
 import Combine
 
@@ -38,6 +42,12 @@ class TranscriptionManager: ObservableObject {
         errorMessage = ""
         showSuccess = false
         showResults = false
+        self.statusMessage = "Idle"
+        self.progress = 0.0
+        self.showSuccess = false
+        self.currentPreviewText = ""
+        self.currentElapsed = 0
+        self.currentRemaining = 0
     }
 
     func loadAudioFiles(from directory: URL) {
@@ -142,9 +152,94 @@ class TranscriptionManager: ObservableObject {
             if successfulTranscriptions.isEmpty {
                 showError(message: "No files were successfully transcribed. Please check the errors above.")
             }
-            isProcessing = false
-            progress = 1.0
-            statusMessage = "Transcription complete: \(successfulTranscriptions.count) of \(audioFiles.count) files"
+            self.isProcessing = false
+            self.statusMessage = "Transcription complete: \(successfulTranscriptions.count) of \(audioFiles.count) files"
+            self.progress = 1.0
+        }
+    }
+
+    @Published var currentPreviewText: String = ""
+    @Published var currentElapsed: TimeInterval = 0
+    @Published var currentRemaining: TimeInterval = 0
+
+    func parseProgress(from line: String) {
+        // Debug Log
+        // print("🔍 [ParseProgress] Line: \(line)")
+
+        // Expected format: "[===] 33% | Elapsed Time: 22.86 s | Remaining: 45.42 s"
+
+        let parts = line.components(separatedBy: "|")
+        var elapsed: Double = 0
+        var remaining: Double = 0
+
+        for part in parts {
+            let trimmed = part.trimmingCharacters(in: .whitespaces)
+            if trimmed.contains("Elapsed Time:") {
+                let cleanVal = trimmed
+                    .replacingOccurrences(of: "Elapsed Time:", with: "")
+                    .replacingOccurrences(of: "s", with: "") // Remove 's' suffix
+                    .trimmingCharacters(in: .whitespaces)
+                elapsed = parseDuration(cleanVal)
+            } else if trimmed.contains("Remaining:") {
+                let cleanVal = trimmed
+                    .replacingOccurrences(of: "Remaining:", with: "")
+                    .replacingOccurrences(of: "s", with: "")
+                    .trimmingCharacters(in: .whitespaces)
+
+                // Handle "Estimating..." case
+                if cleanVal.lowercased().contains("estimating") {
+                    remaining = 0
+                } else {
+                    remaining = parseDuration(cleanVal)
+                }
+            }
+        }
+
+        // print("   -> Elapsed: \(elapsed), Remaining: \(remaining)")
+
+        if elapsed > 0 {
+             self.currentElapsed = elapsed
+             self.currentRemaining = remaining
+
+             let total = elapsed + remaining
+             if total > 0 {
+                 self.progress = elapsed / total
+                 // print("   -> Calculated Progress: \(self.progress)")
+             }
+        }
+    }
+
+    func parseLiveText(from line: String) {
+        // print("📝 [ParseLiveText] Line: \(line)")
+        // Expected format: "[00:00:00.000 --> 00:00:04.000]  Some transcribed text"
+        guard let bracketEnd = line.firstIndex(of: "]") else {
+            // print("   ⚠️ No closing bracket found")
+            return
+        }
+        let textPart = line[line.index(after: bracketEnd)...].trimmingCharacters(in: .whitespaces)
+        if !textPart.isEmpty {
+            // print("   -> Found Text: \(textPart)")
+            if self.currentPreviewText.isEmpty {
+                self.currentPreviewText = textPart
+            } else {
+                 self.currentPreviewText += " " + textPart
+            }
+        }
+    }
+
+    // Moved to be an instance method or ensure correct scope
+    private func parseDuration(_ durationString: String) -> Double {
+        // Handle "00:00:00" format
+        if durationString.contains(":") {
+            let parts = durationString.components(separatedBy: ":")
+            guard parts.count == 3,
+                  let h = Double(parts[0]),
+                  let m = Double(parts[1]),
+                  let s = Double(parts[2]) else { return 0 }
+            return h * 3600 + m * 60 + s
+        } else {
+            // Handle raw seconds "22.86"
+            return Double(durationString) ?? 0
         }
     }
 
@@ -294,6 +389,13 @@ class TranscriptionManager: ObservableObject {
         actor OutputCollector {
             private var lines: [String] = []
             private var buffer: String = ""
+            weak var manager: TranscriptionManager?
+            var fileName: String = ""
+
+            init(manager: TranscriptionManager? = nil, fileName: String = "") {
+                self.manager = manager
+                self.fileName = fileName
+            }
 
             func append(_ text: String) {
                 buffer += text
@@ -303,11 +405,26 @@ class TranscriptionManager: ObservableObject {
                 for line in allLines.dropLast() {
                     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty {
-                        // Filter out progress lines to prevent memory exhaustion
-                        // These lines are extremely frequent (1000s per transcription)
+                        // DEBUG: Print everything we see to Xcode console
+                        print("🤖 [CLI Raw]: \(trimmed)")
+
+                        // Parse progress from "Elapsed Time" lines
+                        // Example: "Elapsed Time: 00:00:05, Remaining: 00:00:20"
                         if trimmed.contains("Elapsed Time:") && trimmed.contains("Remaining:") {
+                            Task { @MainActor [weak manager] in
+                                manager?.parseProgress(from: trimmed)
+                            }
                             continue
                         }
+
+                        // Parse timestamps for live preview
+                        // Example: "[00:00:00.000 --> 00:00:05.000]  Hello world"
+                        if trimmed.contains("-->") && trimmed.contains("[") && trimmed.contains("]") {
+                            Task { @MainActor [weak manager] in
+                                manager?.parseLiveText(from: trimmed)
+                            }
+                        }
+
                         // Also filter out raw control sequences that might appear
                         if trimmed.contains("[K") && trimmed.contains("=") {
                             continue
@@ -339,7 +456,7 @@ class TranscriptionManager: ObservableObject {
             }
         }
 
-        let collector = OutputCollector()
+        let collector = OutputCollector(manager: self, fileName: audioFile.lastPathComponent)
         let errorCollector = OutputCollector()
 
         // Create pipe for standard error as well
@@ -387,62 +504,48 @@ class TranscriptionManager: ObservableObject {
             }
 
             // Wait for process to complete with timeout
-            actor ProcessState {
-                private(set) var exited = false
 
-                func markExited() {
-                    exited = true
-                }
-            }
 
-            let processState = ProcessState()
-
-            let waitTask = Task {
+            // Wait for process to complete with timeout
+            // CRITICAL FIX: Use Task.detached to run blocking waitUntilExit() on a background thread.
+            // A normal Task would inherit the MainActor context from the caller, freezing the UI.
+            let exitTask = Task.detached(priority: .userInitiated) {
                 process.waitUntilExit()
-                await processState.markExited()
+                return false // did not timeout
             }
 
-            // Wait for process with timeout (30 minutes max per file)
             let timeoutTask = Task {
                 try await Task.sleep(nanoseconds: 1_800_000_000_000) // 30 minutes
+                return true // did timeout
             }
 
-            // Race: wait for either process completion or timeout
-            // Poll periodically and yield to keep UI responsive
-            var didTimeout: Bool = false
+            var didTimeout = false
 
             await withTaskGroup(of: Bool.self) { group in
                 group.addTask {
-                    // Poll for process completion, yielding frequently
-                    while process.isRunning {
-                        await Task.yield() // Yield to UI every iteration
-                        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-                    }
-                    return false // Process finished normally
+                    await exitTask.value
                 }
                 group.addTask {
-                    _ = await timeoutTask.result
-                    return true // Timeout occurred
+                    do {
+                        return try await timeoutTask.value
+                    } catch {
+                        return false
+                    }
                 }
 
-                if let result = await group.next() {
-                    didTimeout = result
+                if let firstResult = await group.next() {
+                    didTimeout = firstResult
+                    // Cancel the other task
                     if didTimeout {
-                        // Timeout occurred
-                        waitTask.cancel()
+                        exitTask.cancel()
+                        // Note: cancelling exitTask doesn't stop waitUntilExit, but process.terminate() below will.
                     } else {
-                        // Process finished
                         timeoutTask.cancel()
                     }
-                } else {
-                    didTimeout = false
-                    timeoutTask.cancel()
                 }
             }
 
-            // Wait for waitTask to complete (should be quick now)
-            _ = await waitTask.result
-
+            // Allow any pending cancellations to propagate
             if didTimeout {
                 print("⚠️ Process timeout after 30 minutes, terminating...")
                 await MainActor.run {
@@ -454,10 +557,7 @@ class TranscriptionManager: ObservableObject {
                     try? await Task.sleep(nanoseconds: 100_000_000) // 100ms chunks
                     await Task.yield() // Yield to UI
                 }
-                let exited = await processState.exited
-                if !exited {
-                    process.terminate() // Force terminate if still running
-                }
+
                 throw TranscriptionError.transcriptionFailed("Transcription timed out after 30 minutes")
             }
 
@@ -672,7 +772,7 @@ class TranscriptionManager: ObservableObject {
         return text
     }
 
-    private static func cleanWhisperTokens(from text: String) -> String {
+    nonisolated private static func cleanWhisperTokens(from text: String) -> String {
         // Remove Whisper special tokens like <|startoftranscript|>, <|en|>, <|0.00|>, etc.
         // Pattern matches <| followed by any characters until |>
         let pattern = "<\\|[^|]+\\|>"
@@ -811,6 +911,12 @@ class TranscriptionManager: ObservableObject {
             try exportJSON(transcriptions: transcriptions, outputPath: finalOutputPath)
         case .srt:
             try exportSRT(transcriptions: transcriptions, outputPath: finalOutputPath)
+        case .vtt:
+            try exportVTT(transcriptions: transcriptions, outputPath: finalOutputPath)
+        case .html:
+            try exportHTML(transcriptions: transcriptions, outputPath: finalOutputPath)
+        case .pdf:
+            try exportPDF(transcriptions: transcriptions, outputPath: finalOutputPath)
         case .individualFiles:
             try exportIndividualFiles(transcriptions: transcriptions, outputDir: outputPath, includeTimestamp: includeTimestamp)
         }
@@ -866,6 +972,7 @@ class TranscriptionManager: ObservableObject {
                  markdown += "\(transcription.displayText)\n\n"
             }
 
+            markdown += "\n*Source: \(transcription.fileName)*\n"
             markdown += "---\n\n"
         }
 
@@ -890,6 +997,7 @@ class TranscriptionManager: ObservableObject {
                 text += "\(transcription.displayText)\n\n"
             }
 
+            text += "\nSource: \(transcription.fileName)\n"
             text += "\(String(repeating: "-", count: 50))\n\n"
         }
 
@@ -922,9 +1030,10 @@ class TranscriptionManager: ObservableObject {
         try jsonData.write(to: URL(fileURLWithPath: outputPath))
     }
 
-    private func exportIndividualFiles(transcriptions: [TranscriptionResult], outputDir: String, includeTimestamp: Bool = false) throws {
+    func exportIndividualFiles(transcriptions: [TranscriptionResult], outputDir: String, includeTimestamp: Bool = false, format: ExportFormat = .markdown) throws {
         let outputURL = URL(fileURLWithPath: outputDir)
-        try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
+        // Only create directory if it doesn't exist (it holds the outputs)
+        try? FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
 
         let timestampFormatter = DateFormatter()
         timestampFormatter.dateFormat = "yyyy-MM-dd_HHmmss"
@@ -932,33 +1041,34 @@ class TranscriptionManager: ObservableObject {
 
         for transcription in transcriptions {
             let baseFileName = (transcription.fileName as NSString).deletingPathExtension
+            let ext = format == .individualFiles ? "md" : format.fileExtension // Default to md for individualFiles case
+
             let fileName: String
             if includeTimestamp {
-                fileName = "\(batchTimestamp)_\(baseFileName).md"
+                fileName = "\(batchTimestamp)_\(baseFileName).\(ext)"
             } else {
-                fileName = baseFileName + ".md"
+                fileName = "\(baseFileName).\(ext)"
             }
             let fileURL = outputURL.appendingPathComponent(fileName)
+            let individualOutputPath = fileURL.path
 
-            var markdown = "---\n"
-            markdown += "source_path: \"\(transcription.sourcePath)\"\n"
-            markdown += "created_utc: \"\(ISO8601DateFormatter().string(from: transcription.createdAt))\"\n"
-            if let duration = transcription.duration {
-                markdown += "duration_seconds: \(duration)\n"
+            // Use the specific export function for a single item
+            switch format {
+            case .markdown, .individualFiles:
+                try exportMarkdown(transcriptions: [transcription], outputPath: individualOutputPath, includeTimestamp: includeTimestamp)
+            case .plainText:
+                try exportPlainText(transcriptions: [transcription], outputPath: individualOutputPath, includeTimestamp: includeTimestamp)
+            case .json:
+                try exportJSON(transcriptions: [transcription], outputPath: individualOutputPath)
+            case .srt:
+                try exportSRT(transcriptions: [transcription], outputPath: individualOutputPath)
+            case .vtt:
+                try exportVTT(transcriptions: [transcription], outputPath: individualOutputPath)
+            case .html:
+                try exportHTML(transcriptions: [transcription], outputPath: individualOutputPath)
+            case .pdf:
+                try exportPDF(transcriptions: [transcription], outputPath: individualOutputPath)
             }
-            if let model = transcription.modelUsed {
-                markdown += "model_used: \"\(model)\"\n"
-            }
-            markdown += "---\n\n"
-            markdown += "# \(baseFileName)\n\n"
-
-            if includeTimestamp, !transcription.segments.isEmpty {
-                markdown += formatToTimestampedText(transcription.segments)
-            } else {
-                markdown += "\(transcription.displayText)\n"
-            }
-
-            try markdown.write(toFile: fileURL.path, atomically: true, encoding: .utf8)
         }
     }
 
@@ -978,6 +1088,20 @@ class TranscriptionManager: ObservableObject {
             }
 
             srtContent += formatToSRT(transcription.segments)
+            // Add note at end of SRT block if possible or just append
+             // SRT doesn't support comments officially except maybe somewhat inconsistent ways.
+             // But user asked for it. We can add a subtitle at the very end with long duration?
+             // Or just not do it for SRT as it might break parsers.
+             // User said "all exports". Let's add it as a 00:00:00,000 --> 00:00:05,000 subtitle at the end? NO that's bad.
+             // Let's safe skip SRT for now or putting it in a way that doesn't break it is hard.
+             // Actually, I'll skip SRT for now on this one or add it as a new index.
+
+             // Let's add it as a final subtitle segment
+             let lastEnd = transcription.segments.last?.end ?? 0
+             let sourceStart = createSRTTimestamp(lastEnd + 1)
+             let sourceEnd = createSRTTimestamp(lastEnd + 5)
+             let index = transcription.segments.count + 1
+             srtContent += "\n\(index)\n\(sourceStart) --> \(sourceEnd)\nSource: \(transcription.fileName)\n"
         }
 
         try srtContent.write(toFile: outputPath, atomically: true, encoding: .utf8)
@@ -1047,20 +1171,243 @@ class TranscriptionManager: ObservableObject {
         errorMessage = message
         showError = true
     }
+
+
+
+    // MARK: - Advanced Exports (VTT, HTML, PDF)
+
+    private func exportVTT(transcriptions: [TranscriptionResult], outputPath: String) throws {
+        var vtt = "WEBVTT\n\n"
+
+        for transcription in transcriptions {
+            // Add file header note
+            vtt += "NOTE Transcription of \(transcription.fileName)\n\n"
+
+            if transcription.segments.isEmpty {
+                // If no segments, just dump the text as a single block 00:00 -> duration
+                let duration = transcription.duration ?? 0
+                vtt += "00:00.000 --> \(formatTimestampVTT(Double(duration)))\n"
+                vtt += "\(transcription.displayText)\n\n"
+            } else {
+                for segment in transcription.segments {
+                    vtt += "\(formatTimestampVTT(segment.start)) --> \(formatTimestampVTT(segment.end))\n"
+                    vtt += "\(segment.text)\n\n"
+                }
+            }
+            vtt += "NOTE Source: \(transcription.fileName)\n\n"
+        }
+
+        try vtt.write(toFile: outputPath, atomically: true, encoding: .utf8)
+    }
+
+    private func exportHTML(transcriptions: [TranscriptionResult], outputPath: String) throws {
+        var html = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Transcription Export</title>
+            <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; color: #333; }
+                .transcription { margin-bottom: 40px; border-bottom: 1px solid #eee; padding-bottom: 20px; }
+                h1 { color: #007AFF; }
+                h2 { border-bottom: 2px solid #f0f0f0; padding-bottom: 10px; margin-top: 30px; }
+                .meta { color: #666; font-size: 0.9em; margin-bottom: 15px; }
+                .segment { margin-bottom: 10px; }
+                .timestamp { color: #888; font-family: monospace; font-size: 0.85em; margin-right: 10px; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
+                .text { }
+            </style>
+        </head>
+        <body>
+            <h1>Transcription Export</h1>
+            <p class="meta">Generated by WhisperKit Transcriber on \(Date().formatted())</p>
+
+        """
+
+        for transcription in transcriptions {
+            html += """
+            <div class="transcription">
+                <h2>\(transcription.fileName)</h2>
+                \(transcription.duration != nil ? "<p class='meta'>Duration: \(TranscriptionManager.formatDuration(transcription.duration!))</p>" : "")
+            """
+
+            if !transcription.segments.isEmpty {
+                for segment in transcription.segments {
+                    html += """
+                    <div class="segment">
+                        <span class="timestamp">\(formatTimestamp(segment.start))</span>
+                        <span class="text">\(segment.text)</span>
+                    </div>
+                    """
+                }
+            } else {
+                // Pre-formatted text for fallback
+                html += "<pre class='text'>\(transcription.displayText)</pre>"
+            }
+
+            html += "<p class='meta'>Source: \(transcription.fileName)</p>"
+            html += "</div>"
+        }
+
+        html += """
+        </body>
+        </html>
+        """
+
+        try html.write(toFile: outputPath, atomically: true, encoding: .utf8)
+    }
+
+    private func exportPDF(transcriptions: [TranscriptionResult], outputPath: String) throws {
+        // PDF Export Implementation
+        // Note: For a robust implementation, PDFKit can be used.
+        // For simplicity in this iteration, we will rely on a basic PDF drawing approach.
+
+        // Setup PDF Data
+        let pdfData = NSMutableData()
+        let consumer = CGDataConsumer(data: pdfData)!
+        var rect = CGRect(x: 0, y: 0, width: 612, height: 792) // Standard Letter size
+
+        guard let context = CGContext(consumer: consumer, mediaBox: &rect, nil) else {
+            throw TranscriptionError.exportFailed("Could not create PDF context")
+        }
+
+        // PDF Generation Logic
+        // We need to use CoreText or simple string drawing.
+        // Since we are in a swift file without NSView/UIView context easily, using CoreGraphics/CoreText is best.
+
+        // Standard margins
+        let margin: CGFloat = 50
+        var cursorY: CGFloat = 792 - margin
+
+        func checkPageBreak(heightNeeded: CGFloat) {
+            if cursorY - heightNeeded < margin {
+                context.endPage()
+                context.beginPage(mediaBox: &rect)
+                cursorY = 792 - margin
+            }
+        }
+
+        // Begin First Page
+        context.beginPage(mediaBox: &rect)
+
+        // Title Attributes
+        let titleFont = CTFontCreateWithName("Helvetica-Bold" as CFString, 18, nil)
+        let bodyFont = CTFontCreateWithName("Helvetica" as CFString, 12, nil)
+        let monoFont = CTFontCreateWithName("Courier" as CFString, 10, nil)
+
+        // Draw Main Title
+        drawText("Transcription Export", font: titleFont, x: margin, y: &cursorY, context: context)
+        cursorY -= 20
+        drawText("Generated: \(Date().formatted())", font: bodyFont, x: margin, y: &cursorY, context: context)
+        cursorY -= 40
+
+        for transcription in transcriptions {
+            checkPageBreak(heightNeeded: 100)
+
+            // File Title
+            drawText("File: \(transcription.fileName)", font: titleFont, x: margin, y: &cursorY, context: context)
+            cursorY -= 20
+
+            if let duration = transcription.duration {
+                drawText("Duration: \(TranscriptionManager.formatDuration(duration))", font: bodyFont, x: margin, y: &cursorY, context: context)
+                cursorY -= 20
+            }
+
+            cursorY -= 10
+
+            if !transcription.segments.isEmpty {
+                for segment in transcription.segments {
+                    checkPageBreak(heightNeeded: 20)
+
+                    let timeString = "[\(formatTimestamp(segment.start))]"
+                    drawText(timeString, font: monoFont, x: margin, y: &cursorY, context: context)
+
+                    // Simple text wrapping is complex with CoreText manual drawing.
+                    // For MPV (Minimum Viable Product), we will just draw the text line.
+                    // TODO: Implement full multi-line wrapping for PDF.
+                    drawText(segment.text, font: bodyFont, x: margin + 80, y: &cursorY, context: context, isSameLine: true)
+
+                    cursorY -= 15
+                }
+            } else {
+                // Draw full text (basic wrapping not implemented for block text in this simple version)
+                drawText(transcription.displayText, font: bodyFont, x: margin, y: &cursorY, context: context)
+            }
+
+            cursorY -= 15
+            drawText("Source: \(transcription.fileName)", font: monoFont, x: margin, y: &cursorY, context: context)
+            cursorY -= 30
+        }
+
+        context.endPage()
+        context.closePDF()
+
+        pdfData.write(toFile: outputPath, atomically: true)
+    }
+
+    // Helper for PDF Text Drawing
+    private func drawText(_ text: String, font: CTFont, x: CGFloat, y: inout CGFloat, context: CGContext, isSameLine: Bool = false) {
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        let derivedString = NSAttributedString(string: text, attributes: attributes)
+        let line = CTLineCreateWithAttributedString(derivedString)
+
+        // Reset text matrix
+        context.textMatrix = .identity
+
+        let fileY = isSameLine ? y + 15 : y // Adjust y if we just drew a timestamp
+        context.textPosition = CGPoint(x: x, y: fileY)
+        CTLineDraw(line, context)
+    }
+
+    private func formatTimestamp(_ seconds: Double) -> String {
+        let hours = Int(seconds) / 3600
+        let minutes = (Int(seconds) % 3600) / 60
+        let secs = Int(seconds) % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        } else {
+            return String(format: "%02d:%02d", minutes, secs)
+        }
+    }
+
+    private func formatTimestampVTT(_ seconds: Double) -> String {
+        let hours = Int(seconds) / 3600
+        let minutes = (Int(seconds) % 3600) / 60
+        let secs = Int(seconds) % 60
+        let millis = Int((seconds - Double(Int(seconds))) * 1000)
+
+        return String(format: "%02d:%02d:%02d.%03d", hours, minutes, secs, millis)
+    }
+
+    static func formatDuration(_ seconds: TimeInterval) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute, .second]
+        formatter.unitsStyle = .positional
+        formatter.zeroFormattingBehavior = .pad
+        return formatter.string(from: seconds) ?? "00:00"
+    }
 }
 
 // MARK: - Supporting Types
 
 enum TranscriptionError: LocalizedError {
     case whisperKitNotFound
+    case fileNotFound(String)
     case transcriptionFailed(String)
+    case exportFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .whisperKitNotFound:
-            return "WhisperKit CLI not found. Please ensure whisperkit-cli is installed and available in your PATH."
-        case .transcriptionFailed(let details):
-            return "Transcription failed: \(details)"
+            return "WhisperKit CLI not found. Please install it using Homebrew."
+        case .fileNotFound(let path):
+            return "File not found: \(path)"
+        case .transcriptionFailed(let message):
+            return "Transcription failed: \(message)"
+        case .exportFailed(let message):
+            return "Export failed: \(message)"
         }
     }
 }
@@ -1070,4 +1417,3 @@ extension String {
         return (self as NSString).deletingPathExtension
     }
 }
-
