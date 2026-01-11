@@ -36,18 +36,15 @@ class TranscriptionManager: ObservableObject {
         completedTranscriptions = []
         fileStatuses = []
         isProcessing = false
+        statusMessage = "Idle"
         progress = 0.0
-        statusMessage = ""
         showError = false
         errorMessage = ""
         showSuccess = false
         showResults = false
-        self.statusMessage = "Idle"
-        self.progress = 0.0
-        self.showSuccess = false
-        self.currentPreviewText = ""
-        self.currentElapsed = 0
-        self.currentRemaining = 0
+        currentPreviewText = ""
+        currentElapsed = 0
+        currentRemaining = 0
     }
 
     func loadAudioFiles(from directory: URL) {
@@ -163,8 +160,6 @@ class TranscriptionManager: ObservableObject {
     @Published var currentRemaining: TimeInterval = 0
 
     func parseProgress(from line: String) {
-        // Debug Log
-        // print("🔍 [ParseProgress] Line: \(line)")
 
         // Expected format: "[===] 33% | Elapsed Time: 22.86 s | Remaining: 45.42 s"
 
@@ -195,8 +190,6 @@ class TranscriptionManager: ObservableObject {
             }
         }
 
-        // print("   -> Elapsed: \(elapsed), Remaining: \(remaining)")
-
         if elapsed > 0 {
              self.currentElapsed = elapsed
              self.currentRemaining = remaining
@@ -204,21 +197,17 @@ class TranscriptionManager: ObservableObject {
              let total = elapsed + remaining
              if total > 0 {
                  self.progress = elapsed / total
-                 // print("   -> Calculated Progress: \(self.progress)")
              }
         }
     }
 
     func parseLiveText(from line: String) {
-        // print("📝 [ParseLiveText] Line: \(line)")
         // Expected format: "[00:00:00.000 --> 00:00:04.000]  Some transcribed text"
         guard let bracketEnd = line.firstIndex(of: "]") else {
-            // print("   ⚠️ No closing bracket found")
             return
         }
         let textPart = line[line.index(after: bracketEnd)...].trimmingCharacters(in: .whitespaces)
         if !textPart.isEmpty {
-            // print("   -> Found Text: \(textPart)")
             if self.currentPreviewText.isEmpty {
                 self.currentPreviewText = textPart
             } else {
@@ -311,8 +300,9 @@ class TranscriptionManager: ObservableObject {
                 statusMessage = "Extracting audio from video..."
             }
             do {
-                extractedAudioURL = try await AudioExtractor.shared.extractAudio(from: audioFile)
-                processAudioFile = extractedAudioURL!
+                let extractedURL = try await AudioExtractor.shared.extractAudio(from: audioFile)
+                extractedAudioURL = extractedURL
+                processAudioFile = extractedURL
                 print("✅ Audio extracted to: \(processAudioFile.path)")
             } catch {
                 print("❌ Audio extraction failed: \(error.localizedDescription)")
@@ -406,7 +396,9 @@ class TranscriptionManager: ObservableObject {
                     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty {
                         // DEBUG: Print everything we see to Xcode console
+                        #if DEBUG
                         print("🤖 [CLI Raw]: \(trimmed)")
+                        #endif
 
                         // Parse progress from "Elapsed Time" lines
                         // Example: "Elapsed Time: 00:00:05, Remaining: 00:00:20"
@@ -572,9 +564,10 @@ class TranscriptionManager: ObservableObject {
             errorPipe.fileHandleForReading.readabilityHandler = nil
 
             // Get any remaining output
+            // Get any remaining output and flush to collector
             let remainingData = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let text = String(data: remainingData, encoding: .utf8) {
-                await collector.append(text)
+            if let text = String(data: remainingData, encoding: .utf8), !text.isEmpty {
+                await collector.addRemaining(text)
             }
 
             let remainingErrorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
@@ -582,15 +575,13 @@ class TranscriptionManager: ObservableObject {
                 await errorCollector.append(text)
             }
 
-            output = await collector.getBuffer()
+            // output will be constructed from lines mostly
+            let _ = await collector.getBuffer() // Flush/Clear if needed, though addRemaining did it
             let errorOutput = await errorCollector.getBuffer()
 
             print("📊 Process finished with exit code: \(process.terminationStatus)")
             if !errorOutput.isEmpty {
                 print("⚠️ Process Stderr Output:\n\(errorOutput)")
-            }
-            if let remainingText = String(data: remainingData, encoding: .utf8), !remainingText.isEmpty {
-                await collector.addRemaining(remainingText)
             }
 
             output = await collector.getLines().joined(separator: "\n")
@@ -1076,32 +1067,20 @@ class TranscriptionManager: ObservableObject {
         var srtContent = ""
 
         for (index, transcription) in transcriptions.enumerated() {
-            // For combined SRT, we might want to separate them or just append.
-            // Standard SRT doesn't support "multiple files" well in one file.
-            // But if the user selects multiple files and chooses SRT (Combined), we will just append them
-            // with a note, or maybe reset the counter?
-            // Actually, usually you export SRT per file.
-            // But if "Combined" is chosen, let's just append them sequentially.
+            // For combined SRT exports, append each file's subtitles sequentially.
 
             if index > 0 {
                 srtContent += "\n\n"
             }
 
             srtContent += formatToSRT(transcription.segments)
-            // Add note at end of SRT block if possible or just append
-             // SRT doesn't support comments officially except maybe somewhat inconsistent ways.
-             // But user asked for it. We can add a subtitle at the very end with long duration?
-             // Or just not do it for SRT as it might break parsers.
-             // User said "all exports". Let's add it as a 00:00:00,000 --> 00:00:05,000 subtitle at the end? NO that's bad.
-             // Let's safe skip SRT for now or putting it in a way that doesn't break it is hard.
-             // Actually, I'll skip SRT for now on this one or add it as a new index.
 
-             // Let's add it as a final subtitle segment
-             let lastEnd = transcription.segments.last?.end ?? 0
-             let sourceStart = createSRTTimestamp(lastEnd + 1)
-             let sourceEnd = createSRTTimestamp(lastEnd + 5)
-             let index = transcription.segments.count + 1
-             srtContent += "\n\(index)\n\(sourceStart) --> \(sourceEnd)\nSource: \(transcription.fileName)\n"
+            // Add a final subtitle segment indicating the source file name.
+            let lastEnd = transcription.segments.last?.end ?? 0
+            let sourceStart = createSRTTimestamp(lastEnd + 1)
+            let sourceEnd = createSRTTimestamp(lastEnd + 5)
+            let sourceSubtitleIndex = transcription.segments.count + 1
+            srtContent += "\n\(sourceSubtitleIndex)\n\(sourceStart) --> \(sourceEnd)\nSource: \(transcription.fileName)\n"
         }
 
         try srtContent.write(toFile: outputPath, atomically: true, encoding: .utf8)
@@ -1355,8 +1334,8 @@ class TranscriptionManager: ObservableObject {
         // Reset text matrix
         context.textMatrix = .identity
 
-        let fileY = isSameLine ? y + 15 : y // Adjust y if we just drew a timestamp
-        context.textPosition = CGPoint(x: x, y: fileY)
+        let textPositionY = isSameLine ? y + 15 : y // Adjust y if we just drew a timestamp
+        context.textPosition = CGPoint(x: x, y: textPositionY)
         CTLineDraw(line, context)
     }
 
