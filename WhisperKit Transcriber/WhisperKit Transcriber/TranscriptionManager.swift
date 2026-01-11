@@ -576,7 +576,7 @@ class TranscriptionManager: ObservableObject {
             }
 
             // output will be constructed from lines mostly
-            let _ = await collector.getBuffer() // Flush/Clear if needed, though addRemaining did it
+            _ = await collector.getBuffer() // Intentionally discard return value; call used to flush/clear if needed
             let errorOutput = await errorCollector.getBuffer()
 
             print("📊 Process finished with exit code: \(process.terminationStatus)")
@@ -1124,20 +1124,16 @@ class TranscriptionManager: ObservableObject {
         return output + "\n"
     }
 
-    static func formatDuration(_ seconds: Int) -> String {
-        let hours = seconds / 3600
-        let minutes = (seconds % 3600) / 60
-        let secs = seconds % 60
+    static func formatDuration(_ seconds: Double) -> String {
+        return TranscriptionManager.formatDuration(TimeInterval(seconds))
+    }
 
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, secs)
-        } else {
-            return String(format: "%d:%02d", minutes, secs)
-        }
+    static func formatDuration(_ seconds: Int) -> String {
+        return TranscriptionManager.formatDuration(TimeInterval(seconds))
     }
 
     private func formatDuration(_ seconds: Int) -> String {
-        return TranscriptionManager.formatDuration(seconds)
+        return TranscriptionManager.formatDuration(TimeInterval(seconds))
     }
 
     func updateTranscription(_ transcription: TranscriptionResult, editedText: String) {
@@ -1334,7 +1330,8 @@ class TranscriptionManager: ObservableObject {
         // Reset text matrix
         context.textMatrix = .identity
 
-        let textPositionY = isSameLine ? y + 15 : y // Adjust y if we just drew a timestamp
+        let lineHeightOffset: CGFloat = 15
+        let textPositionY = isSameLine ? y + lineHeightOffset : y // Adjust y if we just drew a timestamp
         context.textPosition = CGPoint(x: x, y: textPositionY)
         CTLineDraw(line, context)
     }
