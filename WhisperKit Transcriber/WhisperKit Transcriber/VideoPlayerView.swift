@@ -161,7 +161,8 @@ struct VideoPlayerView: View {
         // Time observer for progress and subtitles
         let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
         player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
-            guard !isPlaying || player?.rate != 0 else { return } // Avoid jitter during seeking
+            // Only update while actively playing to avoid jitter during seeking/pauses
+            guard isPlaying, player?.rate != 0 else { return }
             currentTime = time.seconds
             updateSubtitle(for: time.seconds)
         }
