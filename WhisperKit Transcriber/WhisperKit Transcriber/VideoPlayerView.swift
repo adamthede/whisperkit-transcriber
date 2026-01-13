@@ -192,7 +192,7 @@ struct VideoPlayerView: View {
     }
 
     private func setPlaybackRate(_ rate: Float) {
-        playbackRate = Float(rate)
+        playbackRate = rate
         if isPlaying {
             player?.rate = rate
         }

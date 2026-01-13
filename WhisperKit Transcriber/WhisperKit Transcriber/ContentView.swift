@@ -549,7 +549,6 @@ struct FileCard: View {
                             }
 
                             // Progress Timing Stats
-                            // Progress Timing Stats
                              if elapsedTime > 0 {
                                  HStack(spacing: 8) {
                                      Label(TranscriptionManager.formatDuration(elapsedTime), systemImage: "stopwatch")

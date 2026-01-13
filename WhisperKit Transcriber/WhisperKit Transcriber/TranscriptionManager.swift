@@ -576,7 +576,6 @@ class TranscriptionManager: ObservableObject {
             }
 
             // output will be constructed from lines mostly
-            _ = await collector.getBuffer() // Intentionally discard return value; call used to flush/clear if needed
             let errorOutput = await errorCollector.getBuffer()
 
             print("📊 Process finished with exit code: \(process.terminationStatus)")
@@ -954,7 +953,7 @@ class TranscriptionManager: ObservableObject {
 
             // Add metadata if available
             if let duration = transcription.duration {
-                markdown += "*Duration: \(TranscriptionManager.formatDuration(duration))*\n\n"
+                markdown += "*Duration: \(TranscriptionManager.formatDuration(TimeInterval(duration)))*\n\n"
             }
 
             if includeTimestamp, !transcription.segments.isEmpty {
@@ -979,7 +978,7 @@ class TranscriptionManager: ObservableObject {
             text += "\(transcription.fileName)\n"
             text += "\(String(repeating: "-", count: transcription.fileName.count))\n\n"
             if let duration = transcription.duration {
-                text += "Duration: \(TranscriptionManager.formatDuration(duration))\n\n"
+                text += "Duration: \(TranscriptionManager.formatDuration(TimeInterval(duration)))\n\n"
             }
 
             if includeTimestamp, !transcription.segments.isEmpty {
@@ -1124,16 +1123,12 @@ class TranscriptionManager: ObservableObject {
         return output + "\n"
     }
 
-    static func formatDuration(_ seconds: Double) -> String {
-        return TranscriptionManager.formatDuration(TimeInterval(seconds))
-    }
-
-    static func formatDuration(_ seconds: Int) -> String {
-        return TranscriptionManager.formatDuration(TimeInterval(seconds))
-    }
-
-    private func formatDuration(_ seconds: Int) -> String {
-        return TranscriptionManager.formatDuration(TimeInterval(seconds))
+    static func formatDuration(_ seconds: TimeInterval) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute, .second]
+        formatter.unitsStyle = .positional
+        formatter.zeroFormattingBehavior = .pad
+        return formatter.string(from: seconds) ?? "00:00"
     }
 
     func updateTranscription(_ transcription: TranscriptionResult, editedText: String) {
@@ -1204,7 +1199,7 @@ class TranscriptionManager: ObservableObject {
             html += """
             <div class="transcription">
                 <h2>\(transcription.fileName)</h2>
-                \(transcription.duration != nil ? "<p class='meta'>Duration: \(TranscriptionManager.formatDuration(transcription.duration!))</p>" : "")
+                \(transcription.duration != nil ? "<p class='meta'>Duration: \(TranscriptionManager.formatDuration(TimeInterval(transcription.duration!)))</p>" : "")
             """
 
             if !transcription.segments.isEmpty {
@@ -1285,7 +1280,7 @@ class TranscriptionManager: ObservableObject {
             cursorY -= 20
 
             if let duration = transcription.duration {
-                drawText("Duration: \(TranscriptionManager.formatDuration(duration))", font: bodyFont, x: margin, y: &cursorY, context: context)
+                drawText("Duration: \(TranscriptionManager.formatDuration(TimeInterval(duration)))", font: bodyFont, x: margin, y: &cursorY, context: context)
                 cursorY -= 20
             }
 
@@ -1357,13 +1352,6 @@ class TranscriptionManager: ObservableObject {
         return String(format: "%02d:%02d:%02d.%03d", hours, minutes, secs, millis)
     }
 
-    static func formatDuration(_ seconds: TimeInterval) -> String {
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = [.hour, .minute, .second]
-        formatter.unitsStyle = .positional
-        formatter.zeroFormattingBehavior = .pad
-        return formatter.string(from: seconds) ?? "00:00"
-    }
 }
 
 // MARK: - Supporting Types
