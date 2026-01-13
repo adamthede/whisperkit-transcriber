@@ -17,6 +17,8 @@ class TranscriptionManager: ObservableObject {
     @Published var audioFiles: [URL] = []
     @Published var isProcessing = false
     @Published var progress: Double = 0.0
+    @Published var batchProgress: Double = 0.0
+    @Published var completedFileCount: Int = 0
     @Published var statusMessage = ""
     @Published var selectedModel: WhisperModel = .auto
     @Published var customModelPath: String = "/Users/adam_thede/Documents/huggingface/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3-v20240930_626MB"
@@ -38,6 +40,8 @@ class TranscriptionManager: ObservableObject {
         isProcessing = false
         statusMessage = "Idle"
         progress = 0.0
+        batchProgress = 0.0
+        completedFileCount = 0
         showError = false
         errorMessage = ""
         showSuccess = false
@@ -109,8 +113,11 @@ class TranscriptionManager: ObservableObject {
                 if let statusIndex = fileStatuses.firstIndex(where: { $0.url == audioFile }) {
                     fileStatuses[statusIndex].status = .processing
                 }
-                let currentProgress = Double(index) / totalFiles
-                progress = currentProgress
+                // Reset current file progress
+                progress = 0.0
+
+                // Update batch progress
+                batchProgress = Double(completedFileCount) / totalFiles
                 statusMessage = "Processing \(index + 1) of \(audioFiles.count): \(audioFile.lastPathComponent)"
             }
 
@@ -128,6 +135,8 @@ class TranscriptionManager: ObservableObject {
                         fileStatuses[statusIndex].status = .completed
                         fileStatuses[statusIndex].transcription = transcription
                     }
+                    completedFileCount += 1
+                    batchProgress = Double(completedFileCount) / totalFiles
                 }
             } catch {
                 let errorMsg = error.localizedDescription
@@ -138,6 +147,9 @@ class TranscriptionManager: ObservableObject {
                     if let statusIndex = fileStatuses.firstIndex(where: { $0.url == audioFile }) {
                         fileStatuses[statusIndex].status = .failed(errorMsg)
                     }
+                    // Still increment completed count even on failure so the batch moves forward
+                    completedFileCount += 1
+                    batchProgress = Double(completedFileCount) / totalFiles
                 }
             }
 

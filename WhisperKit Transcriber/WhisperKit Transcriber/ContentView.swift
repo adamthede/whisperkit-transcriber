@@ -57,7 +57,10 @@ struct ContentView: View {
                     ActionBar(
                         isProcessing: transcriptionManager.isProcessing,
                         progress: transcriptionManager.progress,
+                        batchProgress: transcriptionManager.batchProgress,
                         statusMessage: transcriptionManager.statusMessage,
+                        completedCount: transcriptionManager.completedFileCount,
+                        totalCount: transcriptionManager.audioFiles.count,
                         hasFiles: !transcriptionManager.audioFiles.isEmpty,
                         hasResults: !transcriptionManager.completedTranscriptions.isEmpty,
                         onStart: {
@@ -396,7 +399,10 @@ struct ControlPanelCard: View {
 struct ActionBar: View {
     let isProcessing: Bool
     let progress: Double
+    let batchProgress: Double
     let statusMessage: String
+    let completedCount: Int
+    let totalCount: Int
     let hasFiles: Bool
     let hasResults: Bool
     let onStart: () -> Void
@@ -406,14 +412,35 @@ struct ActionBar: View {
         VStack(spacing: 16) {
             if isProcessing {
                 VStack(spacing: 8) {
+                    // Batch Progress
                     HStack {
-                        Text(statusMessage).font(Theme.monoFont())
+                         Text("Batch Progress: \(completedCount)/\(totalCount) files")
+                             .font(Theme.monoFont().bold())
+                             .foregroundColor(Theme.text)
+                         Spacer()
+                         Text("\(Int(batchProgress * 100))%")
+                             .font(Theme.monoFont())
+                             .foregroundColor(Theme.text.opacity(0.7))
+                    }
+                    ProgressView(value: batchProgress)
+                         .progressViewStyle(.linear)
+                         .tint(Theme.secondaryAccent) // Teal for batch
+
+                    Divider().padding(.vertical, 4)
+
+                    // File Progress
+                    HStack {
+                        Text(statusMessage)
+                            .font(Theme.monoFont())
+                            .foregroundColor(Theme.text.opacity(0.8))
                         Spacer()
-                        Text("\(Int(progress * 100))%").font(Theme.monoFont().bold())
+                        Text("\(Int(progress * 100))%")
+                            .font(Theme.monoFont())
+                            .foregroundColor(Theme.text.opacity(0.8))
                     }
                     ProgressView(value: progress)
                         .progressViewStyle(.linear)
-                        .tint(Theme.accent)
+                        .tint(Theme.accent) // Orange for current file
                 }
                 .mcmCard()
             } else if hasFiles {
