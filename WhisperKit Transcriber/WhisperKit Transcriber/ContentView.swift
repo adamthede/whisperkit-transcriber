@@ -62,7 +62,7 @@ struct ContentView: View {
                         progress: transcriptionManager.progress,
                         batchProgress: transcriptionManager.batchProgress,
                         statusMessage: transcriptionManager.statusMessage,
-                        completedCount: transcriptionManager.completedFileCount,
+                        completedCount: transcriptionManager.processedFileCount,
                         totalCount: transcriptionManager.audioFiles.count,
                         hasFiles: !transcriptionManager.audioFiles.isEmpty,
                         hasResults: !transcriptionManager.completedTranscriptions.isEmpty,

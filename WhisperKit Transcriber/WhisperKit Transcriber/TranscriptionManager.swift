@@ -18,7 +18,7 @@ class TranscriptionManager: ObservableObject {
     @Published var isProcessing = false
     @Published var progress: Double = 0.0
     @Published var batchProgress: Double = 0.0
-    @Published var completedFileCount: Int = 0
+    @Published var processedFileCount: Int = 0
     @Published var statusMessage = ""
     @Published var selectedModel: WhisperModel = .auto
     @Published var customModelPath: String = "/Users/adam_thede/Documents/huggingface/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3-v20240930_626MB"
@@ -30,9 +30,27 @@ class TranscriptionManager: ObservableObject {
     @Published var showSuccess = false
     @Published var showResults = false
 
+
     private let supportedVideoExtensions = ["mp4", "mov"]
-    private let supportedAudioExtensions = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "wma", "mp4", "mov"]
-    private let pdfAlignmentOffset: CGFloat = 15
+    // Removed duplicates: mp4 and mov are video extensions
+    private let supportedAudioExtensions = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "wma"]
+
+    private var allSupportedExtensions: [String] {
+        return supportedAudioExtensions + supportedVideoExtensions
+    }
+
+    // Constant for timeout (30 minutes)
+    private let transcriptionTimeoutNanoseconds: UInt64 = 1_800_000_000_000
+
+    // Cached regex for token cleaning
+    private static let tokenRegex: NSRegularExpression? = {
+        do {
+            return try NSRegularExpression(pattern: "<\\|[^|]+\\|>", options: [])
+        } catch {
+            print("Error creating regex for cleaning tokens: \(error)")
+            return nil
+        }
+    }()
 
     func reset() {
         audioFiles = []
@@ -41,8 +59,9 @@ class TranscriptionManager: ObservableObject {
         isProcessing = false
         statusMessage = "Idle"
         progress = 0.0
+        progress = 0.0
         batchProgress = 0.0
-        completedFileCount = 0
+        processedFileCount = 0
         showError = false
         errorMessage = ""
         showSuccess = false
@@ -78,7 +97,8 @@ class TranscriptionManager: ObservableObject {
 
     func isAudioFile(_ url: URL) -> Bool {
         let pathExtension = url.pathExtension.lowercased()
-        return supportedAudioExtensions.contains(pathExtension)
+        // Allow treating video files as audio sources too (extraction happens later)
+        return allSupportedExtensions.contains(pathExtension)
     }
 
     func isVideoFile(_ url: URL) -> Bool {
@@ -118,7 +138,7 @@ class TranscriptionManager: ObservableObject {
                 progress = 0.0
 
                 // Update batch progress
-                batchProgress = Double(completedFileCount) / totalFiles
+                batchProgress = Double(processedFileCount) / totalFiles
                 statusMessage = "Processing \(index + 1) of \(audioFiles.count): \(audioFile.lastPathComponent)"
             }
 
@@ -135,9 +155,10 @@ class TranscriptionManager: ObservableObject {
                     if let statusIndex = fileStatuses.firstIndex(where: { $0.url == audioFile }) {
                         fileStatuses[statusIndex].status = .completed
                         fileStatuses[statusIndex].transcription = transcription
+                        fileStatuses[statusIndex].transcription = transcription
                     }
-                    completedFileCount += 1
-                    batchProgress = Double(completedFileCount) / totalFiles
+                    processedFileCount += 1
+                    batchProgress = Double(processedFileCount) / totalFiles
                 }
             } catch {
                 let errorMsg = error.localizedDescription
@@ -149,8 +170,8 @@ class TranscriptionManager: ObservableObject {
                         fileStatuses[statusIndex].status = .failed(errorMsg)
                     }
                     // Still increment completed count even on failure so the batch moves forward
-                    completedFileCount += 1
-                    batchProgress = Double(completedFileCount) / totalFiles
+                    processedFileCount += 1
+                    batchProgress = Double(processedFileCount) / totalFiles
                 }
             }
 
@@ -419,6 +440,8 @@ class TranscriptionManager: ObservableObject {
                         // Parse progress from "Elapsed Time" lines
                         // Example: "Elapsed Time: 00:00:05, Remaining: 00:00:20"
                         if trimmed.contains("Elapsed Time:") && trimmed.contains("Remaining:") {
+                            // Weak self capture is correct; manager is weak in init but we capture it again weakly here
+                            // just to be safe and explicit about the closure context
                             Task { @MainActor [weak manager] in
                                 manager?.parseProgress(from: trimmed)
                             }
@@ -523,7 +546,7 @@ class TranscriptionManager: ObservableObject {
             }
 
             let timeoutTask = Task {
-                try await Task.sleep(nanoseconds: 1_800_000_000_000) // 30 minutes
+                try await Task.sleep(nanoseconds: transcriptionTimeoutNanoseconds)
                 return true // did timeout
             }
 
@@ -779,19 +802,12 @@ class TranscriptionManager: ObservableObject {
     }
 
     nonisolated private static func cleanWhisperTokens(from text: String) -> String {
-        // Remove Whisper special tokens like <|startoftranscript|>, <|en|>, <|0.00|>, etc.
-        // Pattern matches <| followed by any characters until |>
-        let pattern = "<\\|[^|]+\\|>"
+        // Use cached regex
+        guard let regex = TranscriptionManager.tokenRegex else { return text }
 
-        do {
-            let regex = try NSRegularExpression(pattern: pattern, options: [])
-            let range = NSRange(location: 0, length: text.utf16.count)
-            let cleaned = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
-            return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-        } catch {
-            print("Error creating regex for cleaning tokens: \(error)")
-            return text
-        }
+        let range = NSRange(location: 0, length: text.utf16.count)
+        let cleaned = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func findWhisperKitCLI() -> String? {
@@ -1334,6 +1350,7 @@ class TranscriptionManager: ObservableObject {
 
     // Helper for PDF Text Drawing
     private func drawText(_ text: String, font: CTFont, x: CGFloat, y: inout CGFloat, context: CGContext, alignOnSameLine: Bool = false) {
+        let pdfAlignmentOffset: CGFloat = 15
         let attributes: [NSAttributedString.Key: Any] = [.font: font]
         let derivedString = NSAttributedString(string: text, attributes: attributes)
         let line = CTLineCreateWithAttributedString(derivedString)
