@@ -12,7 +12,6 @@ import AVFoundation
 struct VideoPlayerView: View {
     let videoURL: URL
     let transcription: TranscriptionResult?
-    let transcription: TranscriptionResult?
     @Environment(\.dismiss) private var dismiss
 
     @State private var player: AVPlayer?
