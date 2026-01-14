@@ -13,6 +13,16 @@ import CoreGraphics
 import SwiftUI
 import Combine
 
+// Cached regex for token cleaning (Thread-safe, created once)
+fileprivate let cachedTokenRegex: NSRegularExpression? = {
+    do {
+        return try NSRegularExpression(pattern: "<\\|[^|]+\\|>", options: [])
+    } catch {
+        print("Error creating regex for cleaning tokens: \(error)")
+        return nil
+    }
+}()
+
 class TranscriptionManager: ObservableObject {
     @Published var audioFiles: [URL] = []
     @Published var isProcessing = false
@@ -42,15 +52,7 @@ class TranscriptionManager: ObservableObject {
     // Constant for timeout (30 minutes)
     private let transcriptionTimeoutNanoseconds: UInt64 = 1_800_000_000_000
 
-    // Cached regex for token cleaning
-    private static let tokenRegex: NSRegularExpression? = {
-        do {
-            return try NSRegularExpression(pattern: "<\\|[^|]+\\|>", options: [])
-        } catch {
-            print("Error creating regex for cleaning tokens: \(error)")
-            return nil
-        }
-    }()
+
 
     func reset() {
         audioFiles = []
@@ -803,7 +805,7 @@ class TranscriptionManager: ObservableObject {
 
     nonisolated private static func cleanWhisperTokens(from text: String) -> String {
         // Use cached regex
-        guard let regex = TranscriptionManager.tokenRegex else { return text }
+        guard let regex = cachedTokenRegex else { return text }
 
         let range = NSRange(location: 0, length: text.utf16.count)
         let cleaned = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
