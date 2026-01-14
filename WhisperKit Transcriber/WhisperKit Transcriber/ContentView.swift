@@ -593,9 +593,27 @@ struct FileCard: View {
                              }
                         }
                     } else {
-                        Text(status?.status == .pending ? "Queued" : "Pending")
-                            .font(Theme.monoFont())
-                            .foregroundColor(Theme.text.opacity(0.5))
+                        switch status?.status {
+                        case .failed(let errorMessage):
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Failed")
+                                    .font(Theme.monoFont().bold())
+                                    .foregroundColor(.red)
+                                Text(errorMessage)
+                                    .font(Theme.monoFont())
+                                    .foregroundColor(.red.opacity(0.8))
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        case .pending:
+                            Text("Queued")
+                                .font(Theme.monoFont())
+                                .foregroundColor(Theme.text.opacity(0.5))
+                        default:
+                             Text("Pending")
+                                .font(Theme.monoFont())
+                                .foregroundColor(Theme.text.opacity(0.5))
+                        }
                     }
                 }
             }
