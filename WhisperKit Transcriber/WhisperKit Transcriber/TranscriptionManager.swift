@@ -1308,7 +1308,7 @@ class TranscriptionManager: ObservableObject {
                     // Simple text wrapping is complex with CoreText manual drawing.
                     // For MPV (Minimum Viable Product), we will just draw the text line.
                     // TODO: Implement full multi-line wrapping for PDF.
-                    drawText(segment.text, font: bodyFont, x: margin + 80, y: &cursorY, context: context, isSameLine: true)
+                    drawText(segment.text, font: bodyFont, x: margin + 80, y: &cursorY, context: context, maintainYPosition: true)
 
                     cursorY -= 15
                 }
@@ -1329,7 +1329,7 @@ class TranscriptionManager: ObservableObject {
     }
 
     // Helper for PDF Text Drawing
-    private func drawText(_ text: String, font: CTFont, x: CGFloat, y: inout CGFloat, context: CGContext, isSameLine: Bool = false) {
+    private func drawText(_ text: String, font: CTFont, x: CGFloat, y: inout CGFloat, context: CGContext, maintainYPosition: Bool = false) {
         let attributes: [NSAttributedString.Key: Any] = [.font: font]
         let derivedString = NSAttributedString(string: text, attributes: attributes)
         let line = CTLineCreateWithAttributedString(derivedString)
@@ -1337,8 +1337,12 @@ class TranscriptionManager: ObservableObject {
         // Reset text matrix
         context.textMatrix = .identity
 
+        // When `maintainYPosition` is true we have just drawn another element on this logical line
+        // (for example a timestamp) and now draw the accompanying text. In that case we add a
+        // small vertical offset so the second draw call does not overlap the previous one and
+        // appears visually aligned as part of the same line.
         let lineHeightOffset: CGFloat = 15
-        let textPositionY = isSameLine ? y + lineHeightOffset : y // Adjust y if we just drew a timestamp
+        let textPositionY = maintainYPosition ? y + lineHeightOffset : y // Adjust y if we just drew a timestamp
         context.textPosition = CGPoint(x: x, y: textPositionY)
         CTLineDraw(line, context)
     }
