@@ -14,14 +14,17 @@ import SwiftUI
 import Combine
 
 // Cached regex for token cleaning (Thread-safe, created once)
-fileprivate let cachedTokenRegex: NSRegularExpression? = {
-    do {
-        return try NSRegularExpression(pattern: "<\\|[^|]+\\|>", options: [])
-    } catch {
-        print("Error creating regex for cleaning tokens: \(error)")
-        return nil
-    }
-}()
+// Marked @unchecked Sendable to resolve MainActor isolation warnings; NSRegularExpression is thread-safe.
+private final class TokenRegexCache: @unchecked Sendable {
+    static let regex: NSRegularExpression? = {
+        do {
+            return try NSRegularExpression(pattern: "<\\|[^|]+\\|>", options: [])
+        } catch {
+            print("Error creating regex for cleaning tokens: \(error)")
+            return nil
+        }
+    }()
+}
 
 class TranscriptionManager: ObservableObject {
     @Published var audioFiles: [URL] = []
@@ -805,7 +808,7 @@ class TranscriptionManager: ObservableObject {
 
     nonisolated private static func cleanWhisperTokens(from text: String) -> String {
         // Use cached regex
-        guard let regex = cachedTokenRegex else { return text }
+        guard let regex = TokenRegexCache.regex else { return text }
 
         let range = NSRange(location: 0, length: text.utf16.count)
         let cleaned = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
