@@ -1047,7 +1047,7 @@ class TranscriptionManager: ObservableObject {
 
         for transcription in transcriptions {
             let baseFileName = (transcription.fileName as NSString).deletingPathExtension
-            let ext = format == .individualFiles ? "md" : format.fileExtension // Default to md for individualFiles case
+            let ext = format == .individualFiles ? "md" : format.fileExtension // .individualFiles is an export mode that defaults to markdown, so we force "md" as the extension here
 
             let fileName: String
             if includeTimestamp {
@@ -1311,7 +1311,7 @@ class TranscriptionManager: ObservableObject {
 
                     // Simple text wrapping is complex with CoreText manual drawing.
                     // For MPV (Minimum Viable Product), we will just draw the text line.
-                    // TODO: Implement full multi-line wrapping for PDF.
+                    // TODO: Implement full multi-line wrapping for PDF to avoid truncation of long lines.
                     drawText(segment.text, font: bodyFont, x: margin + 80, y: &cursorY, context: context, alignOnSameLine: true)
 
                     cursorY -= 15
@@ -1341,10 +1341,17 @@ class TranscriptionManager: ObservableObject {
         // Reset text matrix
         context.textMatrix = .identity
 
-        // When `alignOnSameLine` is true we have just drawn another element on this logical line
-        // (for example a timestamp) and now draw the accompanying text. In that case we add a
-        // small vertical offset so the second draw call does not overlap the previous one and
-        // appears visually aligned as part of the same line.
+        // Core Graphics uses a bottom‑left origin and CoreText draws text relative to the
+        // current text position's *baseline*. When `alignOnSameLine` is true we have just
+        // drawn another element on this logical line (typically the timestamp) and now draw
+        // the accompanying text. Because the timestamp and the main text can differ in font
+        // metrics and are rendered with separate draw calls, their baselines do not naturally
+        // line up and can visually overlap.
+        //
+        // `pdfAlignmentOffset` (currently 15 points) is an empirically chosen vertical nudge
+        // that shifts the second draw upward so that the timestamp and its text appear on a
+        // single visual line without colliding. If the PDF font sizes or line height change,
+        // this constant can be adjusted to restore the intended baseline alignment.
         let textPositionY = alignOnSameLine ? y + pdfAlignmentOffset : y // Adjust y if we just drew a timestamp
         context.textPosition = CGPoint(x: x, y: textPositionY)
         CTLineDraw(line, context)
