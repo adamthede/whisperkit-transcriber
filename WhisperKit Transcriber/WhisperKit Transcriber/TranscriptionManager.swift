@@ -16,7 +16,7 @@ import Combine
 // Cached regex for token cleaning (Thread-safe, created once)
 // Marked @unchecked Sendable to resolve MainActor isolation warnings; NSRegularExpression is thread-safe.
 private final class TokenRegexCache: @unchecked Sendable {
-    static let regex: NSRegularExpression? = {
+    nonisolated(unsafe) static let regex: NSRegularExpression? = {
         do {
             return try NSRegularExpression(pattern: "<\\|[^|]+\\|>", options: [])
         } catch {
