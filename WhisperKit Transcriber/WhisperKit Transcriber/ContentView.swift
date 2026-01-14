@@ -95,6 +95,7 @@ struct ContentView: View {
                     // Export/Configuration Panel (Moved to bottom)
                     if !transcriptionManager.audioFiles.isEmpty {
                         // "Export options are all gray until the transcribing finishes"
+                        // Exports are only enabled once processing has stopped and at least one transcription has completed.
                         let isExportEnabled = !transcriptionManager.isProcessing && !transcriptionManager.completedTranscriptions.isEmpty
 
                         ControlPanelCard(
