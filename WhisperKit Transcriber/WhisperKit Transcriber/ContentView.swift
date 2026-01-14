@@ -3,7 +3,10 @@
 //  ContentView.swift
 //  WhisperKitTranscriber
 //
-//  Redesigned with Mid-Century Modern Aesthetics
+//  Main SwiftUI view for the WhisperKit Transcriber app. Manages drag-and-drop
+//  and directory selection for audio/video files, coordinates transcription,
+//  playback, and export options, and hosts subviews such as DropZoneCard and
+//  ControlPanelCard. Redesigned with Mid-Century Modern aesthetics.
 //
 
 import SwiftUI
