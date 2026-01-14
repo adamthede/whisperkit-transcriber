@@ -12,9 +12,11 @@ import AVFoundation
 struct VideoPlayerView: View {
     let videoURL: URL
     let transcription: TranscriptionResult?
-    @Environment(\.presentationMode) var presentationMode
+    let transcription: TranscriptionResult?
+    @Environment(\.dismiss) private var dismiss
 
     @State private var player: AVPlayer?
+    @State private var timeObserverToken: Any?
     @State private var isPlaying = false
     @State private var currentTime: Double = 0
     @State private var duration: Double = 0
@@ -31,7 +33,7 @@ struct VideoPlayerView: View {
                     .lineLimit(1)
                 Spacer()
                 Button(action: {
-                    presentationMode.wrappedValue.dismiss()
+                    dismiss()
                 }) {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundColor(.secondary)
@@ -136,6 +138,10 @@ struct VideoPlayerView: View {
         }
         .onDisappear {
             player?.pause()
+            if let token = timeObserverToken {
+                player?.removeTimeObserver(token)
+                timeObserverToken = nil
+            }
         }
     }
 
@@ -160,9 +166,9 @@ struct VideoPlayerView: View {
 
         // Time observer for progress and subtitles
         let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
-        player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+        timeObserverToken = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak player] time in
             // Only update while actively playing to avoid jitter during seeking/pauses
-            guard isPlaying, player?.rate != 0 else { return }
+            guard let player = player, isPlaying, player.rate != 0 else { return }
             currentTime = time.seconds
             updateSubtitle(for: time.seconds)
         }
