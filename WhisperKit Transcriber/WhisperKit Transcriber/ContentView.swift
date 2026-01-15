@@ -67,12 +67,13 @@ struct ContentView: View {
                         hasFiles: !transcriptionManager.audioFiles.isEmpty,
                         hasResults: !transcriptionManager.completedTranscriptions.isEmpty,
                         onStart: {
-                            Task { await transcriptionManager.startTranscription() }
+                            transcriptionManager.startTranscription()
                         },
                         onReset: {
                              audioPlayer.stop()
                              transcriptionManager.reset()
-                        }
+                        },
+                        onCancel: transcriptionManager.cancelTranscription
                     )
                     .padding(.horizontal, Theme.padding)
 
@@ -411,6 +412,7 @@ struct ActionBar: View {
     let hasResults: Bool
     let onStart: () -> Void
     let onReset: () -> Void
+    let onCancel: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
@@ -429,6 +431,20 @@ struct ActionBar: View {
                     ProgressView(value: batchProgress)
                          .progressViewStyle(.linear)
                          .tint(Theme.secondaryAccent) // Teal for batch
+
+                    HStack {
+                        Spacer()
+                        Button(action: onCancel) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "xmark.circle")
+                                Text("Cancel")
+                            }
+                            .foregroundColor(.red)
+                            .font(Theme.monoFont())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.top, 4)
 
                     Divider().padding(.vertical, 4)
 

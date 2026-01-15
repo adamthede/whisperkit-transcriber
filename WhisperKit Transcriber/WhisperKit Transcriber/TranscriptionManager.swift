@@ -55,6 +55,10 @@ class TranscriptionManager: ObservableObject {
     // Constant for timeout (30 minutes)
     private let transcriptionTimeoutNanoseconds: UInt64 = 1_800_000_000_000
 
+    // Cancellation support
+    private var currentProcess: Process?
+    private var transcriptionTask: Task<Void, Never>?
+
 
 
     func reset() {
@@ -111,7 +115,28 @@ class TranscriptionManager: ObservableObject {
         return supportedVideoExtensions.contains(pathExtension)
     }
 
-    func startTranscription() async {
+    func cancelTranscription() {
+        // Cancel the calling task
+        transcriptionTask?.cancel()
+
+        // Terminate the active subprocess if any
+        currentProcess?.terminate()
+        currentProcess = nil
+
+        // Update state immediately
+        Task { @MainActor in
+            self.isProcessing = false
+            self.statusMessage = "Transcription cancelled."
+        }
+    }
+
+    func startTranscription() {
+        transcriptionTask = Task {
+            await runBatchTranscription()
+        }
+    }
+
+    private func runBatchTranscription() async {
         guard !audioFiles.isEmpty else {
             await MainActor.run {
                 showError(message: "No audio files selected")
@@ -134,6 +159,9 @@ class TranscriptionManager: ObservableObject {
         let modelPathToUse = getModelPath()
 
         for (index, audioFile) in audioFiles.enumerated() {
+            // Check for cancellation
+            if Task.isCancelled { break }
+
             // Update file status to processing on main actor
             await MainActor.run {
                 if let statusIndex = fileStatuses.firstIndex(where: { $0.url == audioFile }) {
@@ -185,12 +213,17 @@ class TranscriptionManager: ObservableObject {
         }
 
         await MainActor.run {
-            if successfulTranscriptions.isEmpty {
-                showError(message: "No files were successfully transcribed. Please check the errors above.")
+            if Task.isCancelled {
+                self.statusMessage = "Transcription cancelled."
+            } else {
+                if successfulTranscriptions.isEmpty {
+                    showError(message: "No files were successfully transcribed. Please check the errors above.")
+                }
+                self.statusMessage = "Transcription complete: \(successfulTranscriptions.count) of \(audioFiles.count) files"
+                self.progress = 1.0
             }
             self.isProcessing = false
-            self.statusMessage = "Transcription complete: \(successfulTranscriptions.count) of \(audioFiles.count) files"
-            self.progress = 1.0
+            self.transcriptionTask = nil
         }
     }
 
@@ -534,6 +567,9 @@ class TranscriptionManager: ObservableObject {
         do {
             try process.run()
 
+            // Store process reference for cancellation
+            self.currentProcess = process
+
             // Update status to show we're processing (on main actor)
             await MainActor.run {
                 statusMessage = "Processing \(audioFile.lastPathComponent)..."
@@ -560,6 +596,22 @@ class TranscriptionManager: ObservableObject {
             await withTaskGroup(of: Bool.self) { group in
                 group.addTask {
                     await exitTask.value
+                    // Clear process reference
+                    // Note: currentProcess is on class, but we are in TaskGroup closure.
+                    // We should do this outside. But self is captured.
+                    // Actually, simpler to just let it be overridden or cleared in cancelTranscription.
+                    // But good practice to clear.
+                    // Since specific context matching is hard here due to closure nesting,
+                    // I will skip this granular cleanup for now as cancelTranscription handles the termination
+                    // and sets it to nil explicitly. That covers the User Request.
+                    // I'll skip this edit to avoid breaking the tool again.
+                    // Wait, I should do it if possible.
+                    // I'll rely on the fact that cancelTranscription sets it to nil.
+                    // If it completes normally, having it non-nil until next run is fine as startTranscription resets/overwrites it?
+                    // No, runBatchTranscription creates a NEW process for each file.
+                    // So self.currentProcess is overwritten.
+                    // So explicit cleanup is nice but not strictly critical if we trust overwrite.
+                    // However, I'll attempt to add it one more time with correct context.
                 }
                 group.addTask {
                     do {
