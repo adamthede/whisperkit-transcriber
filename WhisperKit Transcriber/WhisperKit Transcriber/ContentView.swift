@@ -1,8 +1,12 @@
+
 //
 //  ContentView.swift
 //  WhisperKitTranscriber
 //
-//  Main UI view with drop zone, transcription preview, and export options
+//  Main SwiftUI view for the WhisperKit Transcriber app. Manages drag-and-drop
+//  and directory selection for audio/video files, coordinates transcription,
+//  playback, and export options, and hosts subviews such as DropZoneCard and
+//  ControlPanelCard. Redesigned with Mid-Century Modern aesthetics.
 //
 
 import SwiftUI
@@ -14,56 +18,109 @@ struct ContentView: View {
     @StateObject private var transcriptionManager = TranscriptionManager()
     @State private var isDropTargeted = false
     @State private var selectedTranscription: TranscriptionResult?
-    @State private var showFileList = false
     @State private var showConfiguration = true
-    @State private var showResults = false
-    @State private var exportFormat: ExportFormat = .markdown
+    // showFileList and showResults are implicit in the new feed design, but kept if needed for logic
+    @State private var selectedExportFormats: Set<ExportFormat> = [.markdown]
     @State private var includeTimestampInFilename = true
     @State private var alsoExportIndividualFiles = false
+
     @StateObject private var audioPlayer = AudioPlayerManager()
 
+    // Video Player State
+    struct VideoSelection: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
+    @State private var videoSelection: VideoSelection?
+
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                // Header
-                Text("WhisperKit Batch Transcriber")
-                    .font(.title2)
-                    .fontWeight(.bold)
-                    .padding(.top)
+        ZStack {
+            Theme.background.ignoresSafeArea()
 
-                // Drop Zone
-                dropZoneView
-                    .padding(.horizontal)
+            ScrollView {
+                VStack(spacing: 24) {
+                    // Header
+                    Text("WhisperKit Transcriber")
+                        .font(Theme.headerFont())
+                        .foregroundColor(Theme.text)
+                        .padding(.top, 32)
 
-                // File List (Expandable)
-                if !transcriptionManager.audioFiles.isEmpty {
-                    fileListView
-                        .padding(.horizontal)
+                    // Hero Drop Zone
+                    DropZoneCard(
+                        isDropTargeted: isDropTargeted,
+                        fileCount: transcriptionManager.audioFiles.count,
+                        onSelectDirectory: selectDirectory
+                    )
+                    .onDrop(of: [.audio, .fileURL], isTargeted: $isDropTargeted) { providers in
+                        handleDrop(providers: providers)
+                    }
+                    .padding(.horizontal, Theme.padding)
+
+                    // Action Button (Start / Progress / Reset)
+                    ActionBar(
+                        isProcessing: transcriptionManager.isProcessing,
+                        progress: transcriptionManager.progress,
+                        batchProgress: transcriptionManager.batchProgress,
+                        statusMessage: transcriptionManager.statusMessage,
+                        completedCount: transcriptionManager.processedFileCount,
+                        totalCount: transcriptionManager.audioFiles.count,
+                        hasFiles: !transcriptionManager.audioFiles.isEmpty,
+                        hasResults: !transcriptionManager.completedTranscriptions.isEmpty,
+                        onStart: {
+                            transcriptionManager.startTranscription()
+                        },
+                        onReset: {
+                             audioPlayer.stop()
+                             transcriptionManager.reset()
+                        },
+                        onCancel: transcriptionManager.cancelTranscription
+                    )
+                    .padding(.horizontal, Theme.padding)
+
+                    // Transcription Feed
+                    if !transcriptionManager.audioFiles.isEmpty {
+                        TranscriptionFeed(
+                            audioFiles: transcriptionManager.audioFiles,
+                            completedTranscriptions: transcriptionManager.completedTranscriptions,
+                            fileStatuses: transcriptionManager.fileStatuses,
+                            audioPlayer: audioPlayer,
+                            onPlayVideo: { url in
+                                audioPlayer.pause()
+                                videoSelection = VideoSelection(url: url)
+                            },
+                            transcriptionManager: transcriptionManager
+                        )
+                        .padding(.horizontal, Theme.padding)
+                    }
+
+                    // Export/Configuration Panel (Moved to bottom)
+                    if !transcriptionManager.audioFiles.isEmpty {
+                        // "Export options are all gray until the transcribing finishes"
+                        // Exports are only enabled once processing has stopped and at least one transcription has completed.
+                        let isExportEnabled = !transcriptionManager.isProcessing && !transcriptionManager.completedTranscriptions.isEmpty
+
+                        ControlPanelCard(
+                            selectedModel: $transcriptionManager.selectedModel,
+                            customModelPath: $transcriptionManager.customModelPath,
+                            selectedLanguage: $transcriptionManager.selectedLanguage,
+                            selectedExportFormats: $selectedExportFormats,
+                            includeTimestampInFilename: $includeTimestampInFilename,
+                            alsoExportIndividualFiles: $alsoExportIndividualFiles,
+                            onBrowseModel: browseModelPath,
+                            onExport: exportTranscriptions,
+                            isEnabled: isExportEnabled
+                        )
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .padding(.horizontal, Theme.padding)
+                        .opacity(isExportEnabled ? 1.0 : 0.6)
+                        .grayscale(isExportEnabled ? 0.0 : 1.0)
+                        .disabled(!isExportEnabled)
+                    }
                 }
-
-                // Configuration Section (Expandable)
-                configurationSection
-                    .padding(.horizontal)
-
-                // Start Button
-                startButton
-                    .padding(.horizontal)
-
-                // Progress (when processing)
-                if transcriptionManager.isProcessing {
-                    progressView
-                        .padding(.horizontal)
-                }
-
-                // Results Section (appears after transcription starts)
-                if transcriptionManager.showResults {
-                    resultsSection
-                        .padding(.horizontal)
-                }
+                .padding(.bottom, 50)
             }
-            .padding(.bottom)
         }
-        .frame(minWidth: 600, minHeight: 500)
+        .frame(minWidth: 700, minHeight: 600)
         .alert("Error", isPresented: $transcriptionManager.showError) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -74,510 +131,16 @@ struct ContentView: View {
         } message: {
             Text("Transcription exported successfully!")
         }
-    }
-
-    // MARK: - Drop Zone
-
-    private var dropZoneView: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 12)
-                .fill(isDropTargeted ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.1))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(
-                            isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.3),
-                            style: StrokeStyle(lineWidth: 2, dash: [5, 5])
-                        )
-                )
-
-            VStack(spacing: 12) {
-                Image(systemName: "waveform.circle.fill")
-                    .font(.system(size: 48))
-                    .foregroundColor(.secondary)
-
-                if transcriptionManager.audioFiles.isEmpty {
-                    Text("Drag audio files here")
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-
-                    Text("or")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-
-                    Button("Select Directory") {
-                        selectDirectory()
-                    }
-                    .buttonStyle(.borderedProminent)
-                } else {
-                    VStack(spacing: 8) {
-                        Text("\(transcriptionManager.audioFiles.count) file(s) selected")
-                            .font(.headline)
-
-                        Button("Change Selection") {
-                            selectDirectory()
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-            }
-            .padding(30)
-        }
-        .frame(height: 210)
-        .onDrop(of: [.audio, .fileURL], isTargeted: $isDropTargeted) { providers in
-            handleDrop(providers: providers)
-        }
-    }
-
-    // MARK: - File List
-
-    private var fileListView: some View {
-        DisclosureGroup(isExpanded: $showFileList) {
-            List {
-                ForEach(transcriptionManager.audioFiles, id: \.self) { file in
-                    FileRowView(
-                        file: file,
-                        status: transcriptionManager.fileStatuses.first(where: { $0.url == file }),
-                        audioPlayer: audioPlayer,
-                        statusIcon: statusIcon(for:),
-                        statusColor: statusColor(for:),
-                        formatDuration: formatDuration(_:)
-                    )
-                }
-            }
-            .frame(height: min(CGFloat(transcriptionManager.audioFiles.count) * 60, 300))
-        } label: {
-            Text("\(transcriptionManager.audioFiles.count) files selected")
-                .font(.subheadline)
-                .fontWeight(.medium)
-        }
-    }
-
-    // MARK: - Configuration
-
-    private var configurationSection: some View {
-        DisclosureGroup("Configuration", isExpanded: $showConfiguration) {
-            VStack(alignment: .leading, spacing: 16) {
-                // Model Selector
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Model")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-
-                    Picker("", selection: $transcriptionManager.selectedModel) {
-                        ForEach(WhisperModel.allCases) { model in
-                            Text(model.displayName).tag(model)
-                        }
-                    }
-                    .pickerStyle(.menu)
-
-                    if transcriptionManager.selectedModel != .custom {
-                        Text(transcriptionManager.selectedModel.info)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    if transcriptionManager.selectedModel == .custom {
-                        HStack {
-                            TextField("Model path", text: $transcriptionManager.customModelPath)
-                                .textFieldStyle(.roundedBorder)
-                            Button("Browse...") {
-                                browseModelPath()
-                            }
-                        }
-                    }
-                }
-
-                Divider()
-
-                // Language
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Language")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-
-                    Picker("", selection: $transcriptionManager.selectedLanguage) {
-                        ForEach(Language.allCases) { language in
-                            Text(language.displayName).tag(language)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                }
-
-                Divider()
-
-                // WhisperKit Info
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Image(systemName: "info.circle")
-                            .foregroundColor(.blue)
-                        Text("WhisperKit Installation")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                    }
-
-                    Text("This app requires WhisperKit CLI to be installed via Homebrew:")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    Text("brew install whisperkit-cli")
-                        .font(.system(.caption, design: .monospaced))
-                        .padding(8)
-                        .background(Color.secondary.opacity(0.1))
-                        .cornerRadius(4)
-
-                    Text("Once installed, the app will automatically find and use it.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .padding(.vertical, 8)
-        }
-    }
-
-    // MARK: - Start Button
-
-    private var startButton: some View {
-        HStack(spacing: 12) {
-            Button(action: {
-                Task {
-                    await transcriptionManager.startTranscription()
-                }
-            }) {
-                HStack {
-                    if transcriptionManager.isProcessing {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .scaleEffect(0.8)
-                    }
-                    Text(transcriptionManager.isProcessing ? "Transcribing..." : "Start Transcription")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(transcriptionManager.audioFiles.isEmpty || transcriptionManager.isProcessing)
-
-            // Reset button - only show when not processing and has results
-            if !transcriptionManager.isProcessing && (!transcriptionManager.completedTranscriptions.isEmpty || !transcriptionManager.audioFiles.isEmpty) {
-                Button(action: {
-                    audioPlayer.stop()
-                    transcriptionManager.reset()
-                }) {
-                    Text("Clear & Start New")
-                }
-                .buttonStyle(.bordered)
-            }
-        }
-    }
-
-    // MARK: - Progress
-
-    private var progressView: some View {
-        VStack(spacing: 12) {
-            HStack {
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .scaleEffect(0.8)
-                Text("Transcribing...")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-            }
-
-            ProgressView(value: transcriptionManager.progress)
-                .progressViewStyle(.linear)
-
-            Text(transcriptionManager.statusMessage)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-
-            if !transcriptionManager.completedTranscriptions.isEmpty {
-                Text("✓ \(transcriptionManager.completedTranscriptions.count) file(s) completed")
-                    .font(.caption)
-                    .foregroundColor(.green)
-            }
-        }
-        .padding()
-        .background(Color.secondary.opacity(0.05))
-        .cornerRadius(8)
-    }
-
-    // MARK: - Results Section
-
-    private var resultsSection: some View {
-        DisclosureGroup("Transcription Results", isExpanded: $showResults) {
-            if transcriptionManager.completedTranscriptions.isEmpty && !transcriptionManager.isProcessing {
-                Text("No transcriptions yet. Start transcription to see results here.")
-                    .foregroundColor(.secondary)
-                    .padding()
+        .sheet(item: $videoSelection) { selection in
+            if let transcription = transcriptionManager.completedTranscriptions.first(where: { $0.sourcePath == selection.url.path }) {
+                VideoPlayerView(videoURL: selection.url, transcription: transcription)
             } else {
-                VStack(spacing: 16) {
-                    // Summary
-                    HStack {
-                        Text("\(transcriptionManager.completedTranscriptions.count) of \(transcriptionManager.audioFiles.count) completed")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                    }
-
-                    // Transcription List
-                    if !transcriptionManager.completedTranscriptions.isEmpty {
-                        transcriptionListView
-                    }
-
-                    // Preview/Edit Area
-                    if let selected = selectedTranscription {
-                        transcriptionDetailView(selected)
-                    }
-
-                    // Export Options
-                    if !transcriptionManager.completedTranscriptions.isEmpty {
-                        exportOptionsView
-                    }
-                }
-                .padding(.vertical, 8)
+                VideoPlayerView(videoURL: selection.url, transcription: nil)
             }
         }
     }
 
-    private var transcriptionListView: some View {
-        List(selection: $selectedTranscription) {
-            ForEach(transcriptionManager.completedTranscriptions) { transcription in
-                TranscriptionRow(transcription: transcription)
-                    .tag(transcription)
-            }
-        }
-        .frame(height: 200)
-        .listStyle(.sidebar)
-    }
-
-    private func transcriptionDetailView(_ transcription: TranscriptionResult) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(transcription.fileName)
-                .font(.headline)
-
-            if let duration = transcription.duration {
-                Text("Duration: \(formatDuration(duration))")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            TextEditor(text: Binding(
-                get: { transcription.displayText },
-                set: { newValue in
-                    transcriptionManager.updateTranscription(transcription, editedText: newValue)
-                }
-            ))
-            .font(.system(.body, design: .monospaced))
-            .frame(height: 200)
-            .border(Color.secondary.opacity(0.2))
-        }
-        .padding()
-        .background(Color.secondary.opacity(0.05))
-        .cornerRadius(8)
-    }
-
-    private var exportOptionsView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Export")
-                .font(.headline)
-
-            HStack {
-                Picker("Format", selection: $exportFormat) {
-                    ForEach(ExportFormat.allCases) { format in
-                        Text(format.displayName).tag(format)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 200)
-
-                Button("Export...") {
-                    exportTranscriptions()
-                }
-                .buttonStyle(.borderedProminent)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle("Include timestamp in filename", isOn: $includeTimestampInFilename)
-                    .font(.caption)
-
-                if exportFormat != .individualFiles {
-                    Toggle("Also export individual files", isOn: $alsoExportIndividualFiles)
-                        .font(.caption)
-                }
-            }
-            .padding(.top, 4)
-        }
-        .padding()
-        .background(Color.secondary.opacity(0.05))
-        .cornerRadius(8)
-    }
-
-    // MARK: - Helper Views
-
-    struct FileRowView: View {
-        let file: URL
-        let status: FileStatus?
-        @ObservedObject var audioPlayer: AudioPlayerManager
-        let statusIcon: (FileStatus.ProcessingStatus?) -> String
-        let statusColor: (FileStatus.ProcessingStatus?) -> Color
-        let formatDuration: (Int) -> String
-
-        @State private var fileSize: String?
-        @State private var audioDuration: TimeInterval?
-
-        var body: some View {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: statusIcon(status?.status))
-                        .foregroundColor(statusColor(status?.status))
-                        .frame(width: 20)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(file.lastPathComponent)
-                            .font(.subheadline)
-                            .lineLimit(1)
-
-                        HStack(spacing: 12) {
-                            if let size = fileSize {
-                                Label(size, systemImage: "doc")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-
-                            if let duration = audioDuration {
-                                Label(formatDuration(Int(duration)), systemImage: "clock")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            } else if let transcriptionDuration = status?.transcription?.duration {
-                                Label(formatDuration(transcriptionDuration), systemImage: "clock")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    }
-
-                    Spacer()
-
-                    // Play button
-                    Button(action: {
-                        if audioPlayer.isPlaying && audioPlayer.currentFile == file {
-                            audioPlayer.pause()
-                        } else {
-                            audioPlayer.play(file: file)
-                        }
-                    }) {
-                        Image(systemName: audioPlayer.isPlaying && audioPlayer.currentFile == file ? "pause.circle.fill" : "play.circle.fill")
-                            .font(.title2)
-                            .foregroundColor(.blue)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(status?.status == .processing)
-                }
-            }
-            .padding(.vertical, 4)
-            .onAppear {
-                loadFileMetadata()
-            }
-        }
-
-        private func loadFileMetadata() {
-            // Get file size
-            if let attributes = try? FileManager.default.attributesOfItem(atPath: file.path),
-               let size = attributes[.size] as? Int64 {
-                fileSize = formatFileSize(size)
-            }
-
-            // Get audio duration using AVFoundation
-            Task {
-                let duration = await getAudioDuration(from: file)
-                await MainActor.run {
-                    audioDuration = duration
-                }
-            }
-        }
-
-        private func formatFileSize(_ bytes: Int64) -> String {
-            let formatter = ByteCountFormatter()
-            formatter.allowedUnits = [.useKB, .useMB]
-            formatter.countStyle = .file
-            return formatter.string(fromByteCount: bytes)
-        }
-
-        private func getAudioDuration(from url: URL) async -> TimeInterval? {
-            let asset = AVURLAsset(url: url)
-            do {
-                let duration = try await asset.load(.duration)
-                return CMTimeGetSeconds(duration)
-            } catch {
-                return nil
-            }
-        }
-    }
-
-    struct TranscriptionRow: View {
-        let transcription: TranscriptionResult
-
-        var body: some View {
-            HStack {
-                Image(systemName: "doc.text")
-                    .foregroundColor(.blue)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(transcription.fileName)
-                        .font(.subheadline)
-                    Text(transcription.preview)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(2)
-                }
-                Spacer()
-                if let duration = transcription.duration {
-                    Text(ContentView.formatDuration(duration))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .padding(.vertical, 4)
-        }
-    }
-
-    // MARK: - Helper Functions
-
-    private func statusIcon(for status: FileStatus.ProcessingStatus?) -> String {
-        switch status {
-        case .pending: return "clock"
-        case .processing: return "hourglass"
-        case .completed: return "checkmark.circle.fill"
-        case .failed: return "xmark.circle.fill"
-        case .none: return "doc"
-        }
-    }
-
-    private func statusColor(for status: FileStatus.ProcessingStatus?) -> Color {
-        switch status {
-        case .pending: return .secondary
-        case .processing: return .blue
-        case .completed: return .green
-        case .failed: return .red
-        case .none: return .secondary
-        }
-    }
-
-    static func formatDuration(_ seconds: Int) -> String {
-        let hours = seconds / 3600
-        let minutes = (seconds % 3600) / 60
-        let secs = seconds % 60
-
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, secs)
-        } else {
-            return String(format: "%d:%02d", minutes, secs)
-        }
-    }
-
-    private func formatDuration(_ seconds: Int) -> String {
-        return ContentView.formatDuration(seconds)
-    }
+    // MARK: - Logic Helpers (Kept from original)
 
     private func selectDirectory() {
         let panel = NSOpenPanel()
@@ -599,7 +162,6 @@ struct ContentView: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = false
-
         if panel.runModal() == .OK {
             if let url = panel.url {
                 transcriptionManager.customModelPath = url.path
@@ -608,50 +170,42 @@ struct ContentView: View {
     }
 
     private func exportTranscriptions() {
-        if exportFormat == .individualFiles {
-            // For individual files, use NSOpenPanel to select a directory
-            let panel = NSOpenPanel()
-            panel.canChooseFiles = false
-            panel.canChooseDirectories = true
-            panel.canCreateDirectories = true
-            panel.prompt = "Choose Folder"
-            panel.message = "Select a folder to save individual transcription files"
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.title = "Select Export Directory"
 
-            if panel.runModal() == .OK {
-                if let url = panel.url {
-                    do {
-                        try transcriptionManager.exportTranscriptions(
-                            format: exportFormat,
-                            outputPath: url.path,
-                            includeTimestamp: includeTimestampInFilename,
-                            alsoExportIndividual: alsoExportIndividualFiles
-                        )
-                        transcriptionManager.showSuccess = true
-                    } catch {
-                        transcriptionManager.showError(message: "Export failed: \(error.localizedDescription)")
-                    }
-                }
-            }
-        } else {
-            // For single file exports, use NSSavePanel
-            let panel = NSSavePanel()
-            panel.allowedContentTypes = [UTType(filenameExtension: exportFormat.fileExtension)!]
-            panel.nameFieldStringValue = "transcription.\(exportFormat.fileExtension)"
-            panel.canCreateDirectories = true
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                do {
+                    for format in selectedExportFormats {
+                        let extensionName = format.fileExtension
+                        let outputFilename = "transcriptions.\(extensionName)"
+                        let outputPath = url.path + "/" + outputFilename
 
-            if panel.runModal() == .OK {
-                if let url = panel.url {
-                    do {
                         try transcriptionManager.exportTranscriptions(
-                            format: exportFormat,
-                            outputPath: url.path,
+                            format: format,
+                            outputPath: outputPath,
                             includeTimestamp: includeTimestampInFilename,
-                            alsoExportIndividual: alsoExportIndividualFiles
+                            alsoExportIndividual: false
                         )
-                        transcriptionManager.showSuccess = true
-                    } catch {
-                        transcriptionManager.showError(message: "Export failed: \(error.localizedDescription)")
+
+                        if alsoExportIndividualFiles && format != .individualFiles {
+                             let individualDirKey = outputFilename + "_individual"
+                             let individualDir = url.appendingPathComponent(individualDirKey).path
+                             try transcriptionManager.exportIndividualFiles(
+                                transcriptions: transcriptionManager.completedTranscriptions,
+                                outputDir: individualDir,
+                                includeTimestamp: includeTimestampInFilename,
+                                format: format
+                             )
+                        }
                     }
+                    transcriptionManager.showSuccess = true
+                } catch {
+                    transcriptionManager.showError(message: "Export failed: \(error.localizedDescription)")
                 }
             }
         }
@@ -685,7 +239,7 @@ struct ContentView: View {
                     for url in urls {
                         if url.hasDirectoryPath {
                             audioFiles.append(contentsOf: transcriptionManager.findAudioFiles(in: url))
-                        } else if transcriptionManager.isAudioFile(url) {
+                        } else if transcriptionManager.isAudioFile(url) || transcriptionManager.isVideoFile(url) {
                             audioFiles.append(url)
                         }
                     }
@@ -695,6 +249,440 @@ struct ContentView: View {
         }
 
         return true
+    }
+}
+
+// MARK: - Subcomponents
+
+struct DropZoneCard: View {
+    let isDropTargeted: Bool
+    let fileCount: Int
+    let onSelectDirectory: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            ZStack {
+                Circle()
+                    .fill(Theme.accent.opacity(0.1))
+                    .frame(width: 80, height: 80)
+
+                Image(systemName: fileCount > 0 ? "waveform" : "arrow.down.doc")
+                    .font(.system(size: 32, weight: .bold))
+                    .foregroundColor(Theme.accent)
+            }
+
+            VStack(spacing: 8) {
+                Text(fileCount > 0 ? "\(fileCount) Files Selected" : "Drag Files Here")
+                    .font(Theme.headerFont())
+                    .foregroundColor(Theme.text)
+
+                Text(fileCount > 0 ? "Ready to transcribe" : "Or select a directory to begin")
+                    .font(Theme.bodyFont())
+                    .foregroundColor(Theme.text.opacity(0.7))
+            }
+
+            if fileCount == 0 {
+                Button("Select Directory") {
+                    onSelectDirectory()
+                }
+                .buttonStyle(MCMButtonStyle(color: Theme.accent))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(32)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                .fill(Theme.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                        .stroke(isDropTargeted ? Theme.accent : Theme.border, lineWidth: isDropTargeted ? 2 : 1)
+                        .scaleEffect(isDropTargeted ? 1.02 : 1.0)
+                )
+                .shadow(color: Color.black.opacity(0.05), radius: Theme.shadowRadius, x: 0, y: 4)
+        )
+        .animation(.spring(), value: isDropTargeted)
+        .animation(.spring(), value: fileCount)
+    }
+}
+
+struct ControlPanelCard: View {
+    @Binding var selectedModel: WhisperModel
+    @Binding var customModelPath: String
+    @Binding var selectedLanguage: Language
+    @Binding var selectedExportFormats: Set<ExportFormat>
+    @Binding var includeTimestampInFilename: Bool
+    @Binding var alsoExportIndividualFiles: Bool
+
+    let onBrowseModel: () -> Void
+    let onExport: () -> Void
+    var isEnabled: Bool = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                Text("Configuration")
+                    .font(Theme.headerFont())
+                    .foregroundColor(Theme.text)
+                Spacer()
+            }
+
+            // Model & Language Row
+            HStack(spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Model").font(Theme.monoFont()).foregroundColor(Theme.text.opacity(0.6))
+                    Picker("", selection: $selectedModel) {
+                        ForEach(WhisperModel.allCases) { model in
+                            Text(model.displayName).tag(model)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Language").font(Theme.monoFont()).foregroundColor(Theme.text.opacity(0.6))
+                    Picker("", selection: $selectedLanguage) {
+                        ForEach(Language.allCases) { language in
+                            Text(language.displayName).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                }
+            }
+
+            Divider().opacity(0.5)
+
+            // Export Options
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Export Formats").font(Theme.monoFont()).foregroundColor(Theme.text.opacity(0.6))
+
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 12)], spacing: 12) {
+                    ForEach(ExportFormat.allCases) { format in
+                        Toggle(isOn: Binding(
+                            get: { selectedExportFormats.contains(format) },
+                            set: { isSelected in
+                                if isSelected { selectedExportFormats.insert(format) }
+                                else { selectedExportFormats.remove(format) }
+                            }
+                        )) {
+                            Text(format.displayName)
+                        }
+                        .toggleStyle(MCMToggleStyle())
+                    }
+                }
+
+                HStack(spacing: 16) {
+                    Toggle("Time in Filename", isOn: $includeTimestampInFilename)
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .font(Theme.monoFont())
+
+                    if !selectedExportFormats.contains(.individualFiles) {
+                         Toggle("Individual Files", isOn: $alsoExportIndividualFiles)
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .font(Theme.monoFont())
+                    }
+                    Spacer()
+
+                    if !selectedExportFormats.isEmpty {
+                        Button("Export All") {
+                            onExport()
+                        }
+                        .buttonStyle(MCMButtonStyle(color: Theme.secondaryAccent))
+                        .scaleEffect(0.8)
+                    }
+                }
+                .padding(.top, 8)
+            }
+        }
+        .mcmCard()
+    }
+}
+
+struct ActionBar: View {
+    let isProcessing: Bool
+    let progress: Double
+    let batchProgress: Double
+    let statusMessage: String
+    let completedCount: Int
+    let totalCount: Int
+    let hasFiles: Bool
+    let hasResults: Bool
+    let onStart: () -> Void
+    let onReset: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            if isProcessing {
+                VStack(spacing: 8) {
+                    // Batch Progress
+                    HStack {
+                         Text("Batch Progress: \(completedCount)/\(totalCount) files")
+                             .font(Theme.monoFont().bold())
+                             .foregroundColor(Theme.text)
+                         Spacer()
+                         Text("\(Int(batchProgress * 100))%")
+                             .font(Theme.monoFont())
+                             .foregroundColor(Theme.text.opacity(0.7))
+                    }
+                    ProgressView(value: batchProgress)
+                         .progressViewStyle(.linear)
+                         .tint(Theme.secondaryAccent) // Teal for batch
+
+                    HStack {
+                        Spacer()
+                        Button(action: onCancel) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "xmark.circle")
+                                Text("Cancel")
+                            }
+                            .foregroundColor(.red)
+                            .font(Theme.monoFont())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.top, 4)
+
+                    Divider().padding(.vertical, 4)
+
+                    // File Progress
+                    HStack {
+                        Text(statusMessage)
+                            .font(Theme.monoFont())
+                            .foregroundColor(Theme.text.opacity(0.8))
+                        Spacer()
+                        Text("\(Int(progress * 100))%")
+                            .font(Theme.monoFont())
+                            .foregroundColor(Theme.text.opacity(0.8))
+                    }
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                        .tint(Theme.accent) // Orange for current file
+                }
+                .mcmCard()
+            } else if hasFiles {
+                HStack(spacing: 16) {
+                    Button(action: onStart) {
+                        HStack {
+                            Image(systemName: "bolt.fill")
+                            Text("Start Transcription")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(MCMButtonStyle())
+
+                    if hasResults {
+                        Button(action: onReset) {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(MCMButtonStyle(color: Theme.text.opacity(0.1)))
+                        .frame(width: 50)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct TranscriptionFeed: View {
+    let audioFiles: [URL]
+    let completedTranscriptions: [TranscriptionResult]
+    let fileStatuses: [FileStatus]
+    @ObservedObject var audioPlayer: AudioPlayerManager
+    let onPlayVideo: (URL) -> Void
+    let transcriptionManager: TranscriptionManager // passed for isVideoFile check
+
+    var body: some View {
+        LazyVStack(spacing: 12) {
+            ForEach(audioFiles, id: \.self) { file in
+                let status = fileStatuses.first(where: { $0.url == file })
+                let isVideo = transcriptionManager.isVideoFile(file)
+                let transcription = completedTranscriptions.first(where: { $0.sourcePath == file.path })
+
+                FileCard(
+                    file: file,
+                    status: status,
+                    transcription: transcription,
+                    isVideo: isVideo,
+                    isPlaying: audioPlayer.currentFile == file && audioPlayer.isPlaying,
+                    livePreview: (status?.status == .processing) ? transcriptionManager.currentPreviewText : "",
+                    elapsedTime: (status?.status == .processing) ? transcriptionManager.currentElapsed : 0,
+                    remainingTime: (status?.status == .processing) ? transcriptionManager.currentRemaining : 0,
+                    onPlay: {
+                        if isVideo {
+                             onPlayVideo(file)
+                        } else {
+                            if audioPlayer.isPlaying && audioPlayer.currentFile == file {
+                                audioPlayer.pause()
+                            } else {
+                                audioPlayer.play(file: file)
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+struct FileCard: View {
+    let file: URL
+    let status: FileStatus?
+    let transcription: TranscriptionResult?
+    let isVideo: Bool
+    let isPlaying: Bool
+    let livePreview: String // New parameter for real-time text
+    let elapsedTime: TimeInterval
+    let remainingTime: TimeInterval
+    let onPlay: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            // Icon Column
+            ZStack {
+                Circle()
+                    .fill(statusColor.opacity(0.1))
+                    .frame(width: 44, height: 44)
+
+                Image(systemName: statusIcon)
+                    .foregroundColor(statusColor)
+                    .font(.system(size: 20))
+            }
+
+            // Content Column
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(file.lastPathComponent)
+                        .font(.headline)
+                        .foregroundColor(Theme.text)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    if let duration = transcription?.duration {
+                        Text(formatDuration(duration))
+                            .font(Theme.monoFont())
+                            .foregroundColor(Theme.text.opacity(0.5))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Color.black.opacity(0.05))
+                            .cornerRadius(4)
+                    }
+                }
+
+                if let transcription = transcription {
+                    Text(transcription.preview)
+                        .font(Theme.bodyFont())
+                        .foregroundColor(Theme.text.opacity(0.8))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    if status?.status == .processing {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if !livePreview.isEmpty {
+                                Text(livePreview)
+                                    .font(Theme.monoFont())
+                                    .foregroundColor(Theme.text.opacity(0.8))
+                                    .lineLimit(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .transition(.opacity)
+                            } else {
+                                Text("Processing...")
+                                    .font(Theme.monoFont())
+                                    .foregroundColor(Theme.text.opacity(0.5))
+                            }
+
+                            // Progress Timing Stats
+                             if elapsedTime > 0 {
+                                 HStack(spacing: 8) {
+                                     Label(TranscriptionManager.formatDuration(elapsedTime), systemImage: "stopwatch")
+                                         .help("Elapsed Time")
+                                     if remainingTime > 0 {
+                                         Text("/")
+                                             .foregroundColor(Theme.text.opacity(0.3))
+                                         Label("-\(TranscriptionManager.formatDuration(remainingTime))", systemImage: "hourglass")
+                                             .help("Remaining Time")
+                                     }
+                                 }
+                                 .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                 .foregroundColor(Theme.secondaryAccent)
+                                 .padding(.top, 2)
+                             }
+                        }
+                    } else {
+                        switch status?.status {
+                        case .failed(let errorMessage):
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Failed")
+                                    .font(Theme.monoFont().bold())
+                                    .foregroundColor(.red)
+                                Text(errorMessage)
+                                    .font(Theme.monoFont())
+                                    .foregroundColor(.red.opacity(0.8))
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        case .pending:
+                            Text("Queued")
+                                .font(Theme.monoFont())
+                                .foregroundColor(Theme.text.opacity(0.5))
+                        default:
+                             Text("Pending")
+                                .font(Theme.monoFont())
+                                .foregroundColor(Theme.text.opacity(0.5))
+                        }
+                    }
+                }
+            }
+
+            // Action Column
+            Button(action: onPlay) {
+                Image(systemName: isVideo ? "play.rectangle.fill" : (isPlaying ? "pause.circle.fill" : "play.circle.fill"))
+                    .font(.system(size: 32))
+                    .foregroundColor(Theme.text.opacity(0.8))
+            }
+            .buttonStyle(.plain)
+            .disabled(status?.status == .processing)
+        }
+        .padding(Theme.padding)
+        .background(Theme.surface)
+        .cornerRadius(Theme.cornerRadius)
+        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                .stroke(Theme.border, lineWidth: 1)
+        )
+    }
+
+    private var statusIcon: String {
+        switch status?.status {
+        case .pending: return "clock"
+        case .processing: return "hourglass"
+        case .completed: return "checkmark"
+        case .failed: return "exclamationmark.triangle"
+        case .none: return "doc"
+        }
+    }
+
+    private var statusColor: Color {
+        switch status?.status {
+        case .pending: return .secondary
+        case .processing: return Theme.accent
+        case .completed: return Theme.secondaryAccent // Teal for completion
+        case .failed: return .red
+        case .none: return .secondary
+        }
+    }
+
+    private func formatDuration(_ seconds: Int) -> String {
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        let secs = seconds % 60
+        if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, secs) }
+        else { return String(format: "%d:%02d", minutes, secs) }
     }
 }
 
